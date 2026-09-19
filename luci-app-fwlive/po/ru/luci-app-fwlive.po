@@ -145,6 +145,10 @@ msgstr "ÐÐ¾ÑÑ Ð½Ð°Ð·Ð½."
 msgid "Degraded — sampling"
 msgstr "Упрощённый режим — выборка"
 
+#: openwrt-feed/luci-app-fwlive/htdocs/luci-static/resources/view/status/fwlive.js:847
+msgid "Display limited to %d rows on this device"
+msgstr "На этом устройстве отображение ограничено %d строками"
+
 #: openwrt-feed/luci-app-fwlive/htdocs/luci-static/resources/view/status/fwlive.js:977
 msgid "Degraded — sampling (slow poll RTT; cadence reduced)."
 msgstr "Упрощённый режим — выборка (медленный RTT опроса; интервал увеличен)."
@@ -182,6 +186,18 @@ msgid "Display options on the bar set Limit, row tint, palette, and hostnames."
 msgstr ""
 "Параметры отображения на панели задают лимит, окраску строк, палитру и имена "
 "узлов."
+
+#: openwrt-feed/luci-app-fwlive/htdocs/luci-static/resources/view/status/fwlive.js:2240
+msgid "For a responsive table on a weak device, keep Limit at 250 rows or below. The weak-device cap affects rendered rows; the buffer can still retain more."
+msgstr "Для отзывчивой таблицы на слабом устройстве установите Limit не выше 250 строк. Ограничение слабого устройства влияет на отображаемые строки; буфер всё ещё может хранить больше."
+
+#: openwrt-feed/luci-app-fwlive/htdocs/luci-static/resources/view/status/fwlive.js:2245
+msgid "Switching tabs pauses polling; returning performs one catch-up poll. Hostnames are off by default because lookups add work."
+msgstr "При переключении вкладки опрос приостанавливается; при возврате выполняется один догоняющий опрос. Имена хостов по умолчанию отключены, поскольку их разрешение создаёт дополнительную нагрузку."
+
+#: openwrt-feed/luci-app-fwlive/htdocs/luci-static/resources/view/status/fwlive.js:2250
+msgid "The router log ring may evict older events before fwlive reads them. fwlive cannot recover evicted entries or change forwarding behavior."
+msgstr "Кольцевой журнал маршрутизатора может вытеснить старые события до того, как fwlive их прочитает. fwlive не может восстановить вытесненные записи и не изменяет пересылку."
 
 #: openwrt-feed/luci-app-fwlive/htdocs/luci-static/resources/fwlive/logging.js:121
 msgid "Does not change:"
@@ -749,3 +765,71 @@ msgstr "Ð¸ÑÐ¿Ð¾Ð»ÑÐ·ÑÐµÑÑÑ iptables"
 #: openwrt-feed/luci-app-fwlive/htdocs/luci-static/resources/fwlive/logging.js:89
 msgid "· %s"
 msgstr "· %s"
+
+msgid "Hide rows"
+msgstr "Скрыть строки"
+
+msgid "none"
+msgstr "нет"
+
+msgid "Show rows"
+msgstr "Показать строки"
+
+msgid "Showing a compact summary of the top of the shown sample."
+msgstr "Показана краткая сводка верхней части отображаемой выборки."
+
+msgid "Summary data is unavailable; show rows to inspect the sample."
+msgstr "Данные сводки недоступны; покажите строки для проверки выборки."
+
+msgid "Summary mode"
+msgstr "Режим сводки"
+
+msgid "Summary was bounded before all categories could be included."
+msgstr "Сводка ограничена до включения всех категорий."
+
+msgid "Top drops"
+msgstr "Частые сбросы"
+
+msgid "Top rules"
+msgstr "Частые правила"
+
+msgid "Top talkers"
+msgstr "Частые источники"
+
+msgid "Auto"
+msgstr "Auto"
+
+msgid "Fetch budget"
+msgstr "Fetch budget"
+
+msgid "Maximum raw lines"
+msgstr "Maximum raw lines"
+
+msgid "Manual"
+msgstr "Manual"
+
+msgid "Manual still uses server protection and poll cadence"
+msgstr "Manual still uses server protection and poll cadence"
+
+msgid "%s · requested up to %d raw lines · %d firewall messages returned"
+msgstr "%s · requested up to %d raw lines · %d firewall messages returned"
+
+msgid "%s · requested up to %d raw lines · server limited fetch to %d · %d firewall messages returned"
+msgstr "%s · requested up to %d raw lines · server limited fetch to %d · %d firewall messages returned"
+
+msgid "Server adaptive protection is disabled."
+msgstr "Server adaptive protection is disabled."
+
+msgid "Server protection state is unknown."
+msgstr "Server protection state is unknown."
+
+#: openwrt-feed/luci-app-fwlive/htdocs/luci-static/resources/view/status/fwlive.js:2250
+msgid "Fetch budget controls raw log lines per poll. Auto derives from Limit; Manual selects a bounded maximum."
+msgstr "Fetch budget controls raw log lines per poll. Auto derives from Limit; Manual selects a bounded maximum."
+
+#: openwrt-feed/luci-app-fwlive/htdocs/luci-static/resources/view/status/fwlive.js:2255
+msgid "Manual still uses server protection and poll cadence; it changes the fetch budget, not the polling interval."
+msgstr "Manual still uses server protection and poll cadence; it changes the fetch budget, not the polling interval."
+
+msgid "buffer filling"
+msgstr "buffer filling"

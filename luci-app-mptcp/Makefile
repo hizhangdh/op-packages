@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 LUCI_TITLE:=LuCI Support for MPTCP
 PKG_LICENSE:=GPLv3
 
-#include $(TOPDIR)/feeds/luci/luci.mk
+#include ../luci/luci.mk
 include $(TOPDIR)/feeds/luci/luci.mk
 
 define Package/luci-app-mptcp/install

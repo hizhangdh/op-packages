@@ -5,12 +5,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-smscontrol
-LUCI_DEPENDS:=+smscontrol
+LUCI_DEPENDS:=
 
 # Version: <major>.<minor>.<patch>
 PKG_VERSION:=0.2.0
 
-PKG_RELEASE:=4
+PKG_RELEASE:=5
 
 LUCI_TITLE:=LuCI utility to remote control via SMS
 
