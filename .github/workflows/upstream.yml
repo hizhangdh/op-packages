@@ -47,8 +47,9 @@ jobs:
       run: |
         shopt -s extglob
         set +e
+        
         git rm -r --cache * >/dev/null 2>&1 &
-        rm -rf `find ./* -maxdepth 0 -type d ! -name ".github/diy"` >/dev/null 2>&1
+        rm -rf `find ./* -maxdepth 0 -type d ! -name ".github/diy" ! -name "my-default-settings"` >/dev/null 2>&1
         function git_clone() {
           git clone --depth 1 $1 $2
           if [ "$?" != 0 ]; then
