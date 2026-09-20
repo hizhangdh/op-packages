@@ -17,7 +17,7 @@ board_name() {
 				uci set wireless.${radio}.htmode='HE80'
 			fi
 		elif [ "$(uci -q get wireless.${radio}.band)" = "2g" ]; then
-			uci -q set wireless.default_${radio}.ssid="${SSID}_2.4G"
+			uci -q set wireless.default_${radio}.ssid="${SSID}"
 		fi
 			uci -q set wireless.default_${radio}.device="${radio}"
 			SSID_PASSWD="${SSID_PASSWD:-$(uci -q get wireless.default_${radio}.key)}"
