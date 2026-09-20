@@ -47,9 +47,15 @@ jobs:
       run: |
         shopt -s extglob
         set +e
+
+        # ===== 备份 my-default-settings =====
+        if [ -d "my-default-settings" ]; then
+          cp -r my-default-settings /tmp/my-default-settings-backup
+          echo "my-default-settings backed up"
+        fi
         
         git rm -r --cache * >/dev/null 2>&1 &
-        rm -rf `find ./* -maxdepth 0 -type d ! -name ".github/diy" ! -name "my-default-settings"` >/dev/null 2>&1
+        rm -rf `find ./* -maxdepth 0 -type d ! -name ".github/diy"` >/dev/null 2>&1
         function git_clone() {
           git clone --depth 1 $1 $2
           if [ "$?" != 0 ]; then
@@ -507,6 +513,14 @@ jobs:
     - name: Apply
       run: |
         Emoji=("🎉" "🤞" "✨" "🎁" "🎈" "🎄" "🎨" "💋" "🍓" "🍕" "🍉" "💐" "🌴" "🚀" "🛸" "🗽" "⛅" "🌈" "🔥" "⛄" "🐶" "🏅" "🦄" "🐤")
+
+        # ===== 恢复 my-default-settings =====
+        if [ -d "/tmp/my-default-settings-backup" ]; then
+          rm -rf my-default-settings
+          cp -r /tmp/my-default-settings-backup my-default-settings
+          echo "my-default-settings restored"
+        fi
+        
         git add .
         git commit -m "${Emoji[$[$RANDOM % ${#Emoji[@]}]]} Sync $(date +%Y-%m-%d" "%H:%M:%S)"
         for pkg in $(git diff-tree --no-commit-id --name-only HEAD | grep -v "naiveproxy" | grep -v "luci-app-store" | grep -v "luci-app-quickstart"); do
