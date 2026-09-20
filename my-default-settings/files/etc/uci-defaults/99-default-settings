@@ -47,75 +47,6 @@ if [ -f /etc/config/attendedsysupgrade ]; then
 	uci commit attendedsysupgrade
 fi
 
-if [ -z "$version" ] || [ "$version" -lt 1 ]; then
-	uci -q set luci.main.lang='auto'
-	if [ -f /usr/share/rpcd/acl.d/luci-theme-argon.json ]; then
-		uci -q set luci.main.mediaurlbase='/luci-static/argon'
-		uci -q set argon.@global[0].mode='normal'
-		uci commit argon
-	fi
-	uci commit luci
-	
-	if uci -q get system.@system[0] >/dev/null; then
-		uci -q set system.@system[0].zonename='Asia/Shanghai'
-		uci -q set system.@system[0].timezone='CST-8'
-		uci -q set system.@system[0].conloglevel='4'
-		uci -q set system.@system[0].cronloglevel='8'
-		uci -q set system.@system[0].ttylogin='1'
-		uci -q del system.ntp.server
-		uci -q add_list system.ntp.server='ntp.aliyun.com'
-		uci -q add_list system.ntp.server='0.openwrt.pool.ntp.org'
-		uci commit system
-	fi
-
-	uci -q set uhttpd.main.rfc1918_filter=0
-	uci -q set uhttpd.main.redirect_https=0
-	uci -q set uhttpd.main.script_timeout='120'
-	uci commit uhttpd
-	
-	uci -q set upnpd.config.enabled='1'
-	uci commit upnpd
-	
-	(echo "root"; sleep 1; echo "root") | /bin/busybox passwd root >/dev/null 2>&1 &
-
-	uci -q set firewall.@defaults[0].flow_offloading='1'
-	uci -q set firewall.@defaults[0].flow_offloading_hw='1'
-	uci commit firewall
-
-	uci -q set upnpd.config.enabled='1'
-	uci commit upnpd
-	
-	grep -q log-facility /etc/dnsmasq.conf || \
-		echo "log-facility=/dev/null" >> /etc/dnsmasq.conf
-
-	#kernel_version=$(uname -r)
-	#if [ -f "/lib/modules/$kernel_version/xt_FULLCONENAT.ko" ] || [ -f "/lib/modules/$kernel_version/nft_fullcone.ko" ]; then
-	#	uci -q set firewall.@defaults[0].fullcone='1'
-	#	uci commit firewall
-	#fi
-
-	uci -q set fstab.@global[0].anon_mount=1
-	uci commit fstab
- 
-	uci -q set network.globals.packet_steering=1
-	uci -q set network.@device[0].promisc=1
-	uci commit network
-  
-	uci -q set dhcp.@dnsmasq[0].dns_redirect='1'
-	uci -q set dhcp.@dnsmasq[0].allservers='1'
-	uci -q del dhcp.@dnsmasq[0].noresolv
-	uci -q set dhcp.@dnsmasq[0].cachesize='1500'
-	uci -q set dhcp.@dnsmasq[0].min_ttl='3600'
-	uci -q set dhcp.lan.force='1'
-	uci -q set dhcp.lan.ra='hybrid'
-	uci -q set dhcp.lan.ndp='hybrid'
-	uci -q set dhcp.lan.dhcpv6='hybrid'
-	uci commit dhcp
-
-	uci -q set nft-qos.default.limit_enable='0'
-	uci commit nft-qos
-fi
-
 # kB
 memtotal=$(grep MemTotal /proc/meminfo | awk '{print $2}')
 if [ "$memtotal" -ge 1048576 ]; then
@@ -151,6 +82,62 @@ else
 fi
 
 if [ -z "$version" ] || [ "$version" -lt 1 ]; then
+	uci -q set luci.main.lang='auto'
+	uci -q set luci.main.mediaurlbase='/luci-static/argon'
+	uci -q set argon.@global[0].mode='normal'
+	uci commit argon
+	uci commit luci
+	
+	if uci -q get system.@system[0] >/dev/null; then
+		uci -q set system.@system[0].zonename='Asia/Shanghai'
+		uci -q set system.@system[0].timezone='CST-8'
+		uci -q set system.@system[0].conloglevel='4'
+		uci -q set system.@system[0].cronloglevel='8'
+		uci -q set system.@system[0].ttylogin='1'
+		uci -q del system.ntp.server
+		uci -q add_list system.ntp.server='ntp.aliyun.com'
+		uci -q add_list system.ntp.server='0.openwrt.pool.ntp.org'
+		uci commit system
+	fi
+
+	uci -q set uhttpd.main.rfc1918_filter=0
+	uci -q set uhttpd.main.redirect_https=0
+	uci -q set uhttpd.main.script_timeout='120'
+	uci commit uhttpd
+	
+	uci -q set upnpd.config.enabled='1'
+	uci commit upnpd
+	
+	(echo "root"; sleep 1; echo "root") | /bin/busybox passwd root >/dev/null 2>&1 &
+
+	uci -q set firewall.@defaults[0].flow_offloading='1'
+	uci -q set firewall.@defaults[0].flow_offloading_hw='1'
+	uci commit firewall
+	
+	grep -q log-facility /etc/dnsmasq.conf || \
+		echo "log-facility=/dev/null" >> /etc/dnsmasq.conf
+
+	#kernel_version=$(uname -r)
+	#if [ -f "/lib/modules/$kernel_version/xt_FULLCONENAT.ko" ] || [ -f "/lib/modules/$kernel_version/nft_fullcone.ko" ]; then
+	#	uci -q set firewall.@defaults[0].fullcone='1'
+	#	uci commit firewall
+	#fi
+
+	uci -q set fstab.@global[0].anon_mount=1
+	uci commit fstab
+ 
+	uci -q set network.globals.packet_steering=1
+	uci -q set network.@device[0].promisc=1
+	uci commit network
+  
+	uci -q set dhcp.@dnsmasq[0].dns_redirect='1'
+	uci -q set dhcp.@dnsmasq[0].allservers='1'
+	uci -q del dhcp.@dnsmasq[0].noresolv	
+	uci -q set dhcp.@dnsmasq[0].min_ttl='3600'
+	uci -q set dhcp.lan.force='1'
+	uci -q set dhcp.lan.ra='hybrid'
+	uci -q set dhcp.lan.ndp='hybrid'
+	uci -q set dhcp.lan.dhcpv6='hybrid'
 	uci -q get dhcp.@dnsmasq[0] || uci -q add dhcp dnsmasq
 	uci -q set dhcp.@dnsmasq[0].cachesize="$cachesize"
 	uci -q set dhcp.@dnsmasq[0].dnsforwardmax="$dnsforwardmax"
@@ -159,6 +146,11 @@ if [ -z "$version" ] || [ "$version" -lt 1 ]; then
 	uci -q set dhcp.@dnsmasq[0].rebind_protection='0'
 	uci -q set dhcp.@dnsmasq[0].rebind_localhost='1'
 	uci commit dhcp
+
+	uci -q set nft-qos.default.limit_enable='0'
+	uci commit nft-qos
+
+	
 
 	uci -q set system.@system[0].zram_size_mb="$((memtotal / 1024 / 3))"
 	uci commit system
