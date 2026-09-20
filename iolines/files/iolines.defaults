@@ -1,12 +1,4 @@
 #!/bin/sh
-[ ! -f "/usr/share/ucitrack/luci-app-iolines.json" ] && {
-    cat > /usr/share/ucitrack/luci-app-iolines.json << EEOF
-{
-    "config": "iolines",
-    "init": "iolines"
-}
-EEOF
-}
 
 uci -q batch <<-EOF >/dev/null
 	delete ucitrack.@iolines[-1]
