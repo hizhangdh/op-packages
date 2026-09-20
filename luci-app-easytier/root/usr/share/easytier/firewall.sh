@@ -60,7 +60,7 @@ setup_network_interface() {
 		fi
 		log_message "INFO" "easytier" "添加网络接口 EasyTier 绑定虚拟接口 ${tunname}" "/tmp/easytier.log"
 		uci set network.EasyTier.device="$tunname"
-		uci set network.EasyTier.ifname="$tunname"
+		uci set network.EasyTier.device="$tunname"
 	fi
 }
 

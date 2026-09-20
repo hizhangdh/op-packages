@@ -101,3 +101,7 @@ stop_service() {
 		rm -rf "$PID_F"
 	fi
 }
+
+reload_service() {
+	restart
+}

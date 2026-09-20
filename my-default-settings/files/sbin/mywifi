@@ -17,7 +17,7 @@ board_name() {
 				uci set wireless.${radio}.htmode='HE80'
 			fi
 		elif [ "$(uci -q get wireless.${radio}.band)" = "2g" ]; then
-			uci -q set wireless.default_${radio}.ssid="${SSID}"
+			uci -q set wireless.default_${radio}.ssid="${SSID}_2.4G"
 		fi
 			uci -q set wireless.default_${radio}.device="${radio}"
 			SSID_PASSWD="${SSID_PASSWD:-$(uci -q get wireless.default_${radio}.key)}"
@@ -38,7 +38,7 @@ done
 
 	if [[ "$(cat /etc/config/wireless)" ]]; then
 		. /etc/openwrt_release
-		SSID="$(uci -q get wizard.default.wifi_ssid || uci -q get system.@system[0].hostname || echo home_zhang)"
+		SSID="$(uci -q get wizard.default.wifi_ssid || uci -q get system.@system[0].hostname || echo Kwrt)"
 		SSID_PASSWD="$(uci -q get wizard.default.wifi_key)"
 		sed -i '/option disabled/d' /etc/config/wireless
 
