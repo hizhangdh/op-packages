@@ -181,7 +181,7 @@ fi
 if [ -z "$(uci -q get dhcp.default_server)" ]; then
 	uci -q set dhcp.default_server=domain
 	uci -q set dhcp.default_server.name='MI-R3D'
-	uci -q set dhcp.default_server.ip='10.0.0.1'
+	uci -q set dhcp.default_server.ip='192.168.1.3'
 	uci -q set dhcp.default_server.comments='后台地址'
 	uci commit dhcp
 fi
