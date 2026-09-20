@@ -49,7 +49,7 @@ fi
 
 if [ -z "$version" ] || [ "$version" -lt 1 ]; then
 	uci -q set luci.main.lang='auto'
-	if [ -f /usr/share/rpcd/acl.d/luci-theme-footstrap.json ]; then
+	if [ -f /usr/share/rpcd/acl.d/luci-theme-argon.json ]; then
 		uci -q set luci.main.mediaurlbase='/luci-static/argon'
 		uci -q set argon.@global[0].mode='normal'
 		uci commit argon
@@ -162,23 +162,6 @@ if [ -z "$version" ] || [ "$version" -lt 1 ]; then
 
 	uci -q set system.@system[0].zram_size_mb="$((memtotal / 1024 / 3))"
 	uci commit system
-	
-	# sysctl overwrite
-	SYSCTL_LOCAL=/etc/sysctl.d/50-local.conf
-	mkdir -p /etc/sysctl.d
-	> "$SYSCTL_LOCAL"
-	echo "net.nf_conntrack_max=$nf_conntrack_max" >> "$SYSCTL_LOCAL"
-	echo "net.core.rmem_max=$nf_conntrack_max" >> "$SYSCTL_LOCAL"
-	
-	if [ -z "$(uci -q get dhcp._ta)" ]; then
-		uci -q set dhcp._ta=domain
-		uci -q set dhcp._ta.name="time.android.com"
-		uci -q set dhcp._ta.ip="203.107.6.88"
-		uci -q set dhcp._ta.comments="time.android"
-		uci commit dhcp
-	fi
-	version=1
-fi
 
 	# ===== 把 LAN 接口改成 DHCP 客户端 =====
 	uci set network.lan.proto='dhcp'
@@ -210,6 +193,23 @@ fi
 	/etc/init.d/firewall stop
 	/etc/init.d/dnsmasq disable
 	/etc/init.d/dnsmasq stop
+
+	# sysctl overwrite
+	SYSCTL_LOCAL=/etc/sysctl.d/50-local.conf
+	mkdir -p /etc/sysctl.d
+	> "$SYSCTL_LOCAL"
+	echo "net.nf_conntrack_max=$nf_conntrack_max" >> "$SYSCTL_LOCAL"
+	echo "net.core.rmem_max=$nf_conntrack_max" >> "$SYSCTL_LOCAL"
+	
+	if [ -z "$(uci -q get dhcp._ta)" ]; then
+		uci -q set dhcp._ta=domain
+		uci -q set dhcp._ta.name="time.android.com"
+		uci -q set dhcp._ta.ip="203.107.6.88"
+		uci -q set dhcp._ta.comments="time.android"
+		uci commit dhcp
+	fi
+	version=1
+fi
 
 if [ -n "$(command -v nginx)" ]; then
 	if [ -z "$(uci -q get nginx.default_server)" ]; then
