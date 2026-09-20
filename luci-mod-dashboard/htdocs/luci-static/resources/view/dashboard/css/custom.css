@@ -6,7 +6,7 @@
  */
 
 .Dashboard {
-	--dashboard-surface-alt: var(--border-color-medium, #e4e7ec);
+	--dashboard-surface-alt: var(--background-color-medium, #f2f4f7);
 	--dashboard-text: var(--text-color-high, #1f2933);
 	--dashboard-text-muted: var(--text-color-medium, #6b7280);
 	--dashboard-border: var(--border-color-medium, rgba(0, 0, 0, 0.12));
@@ -31,7 +31,7 @@
 }
 
 [data-darkmode="true"] .Dashboard {
-	--dashboard-surface-alt: var(--border-color-medium, #39414d);
+	--dashboard-surface-alt: var(--background-color-medium, #262b34);
 	--dashboard-text: var(--text-color-high, #e6e8eb);
 	--dashboard-text-muted: var(--text-color-medium, #9aa3ad);
 	--dashboard-border: var(--border-color-medium, rgba(255, 255, 255, 0.12));
@@ -44,7 +44,7 @@
 
 @media (prefers-color-scheme: dark) {
 	:root:not([data-darkmode="false"]) .Dashboard {
-		--dashboard-surface-alt: var(--border-color-medium, #39414d);
+		--dashboard-surface-alt: var(--background-color-medium, #262b34);
 		--dashboard-text: var(--text-color-high, #e6e8eb);
 		--dashboard-text-muted: var(--text-color-medium, #9aa3ad);
 		--dashboard-border: var(--border-color-medium, rgba(255, 255, 255, 0.12));
@@ -150,7 +150,7 @@
 
 .dashboard-donut-track {
 	fill: none;
-	stroke: var(--dashboard-surface-alt);
+	stroke: var(--dashboard-border);
 	stroke-width: 16;
 }
 
