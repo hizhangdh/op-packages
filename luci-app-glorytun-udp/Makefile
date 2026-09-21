@@ -10,7 +10,7 @@ LUCI_DEPENDS:=+glorytun-udp
 
 PKG_LICENSE:=GPLv3
 
-#include ../luci/luci.mk
+#include $(TOPDIR)/feeds/luci/luci.mk
 include $(TOPDIR)/feeds/luci/luci.mk
 
 # call BuildPackage - OpenWrt buildroot signature
