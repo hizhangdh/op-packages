@@ -1,4 +1,12 @@
 #!/bin/sh
+[ ! -f "/usr/share/ucitrack/luci-app-glorytun-udp.json" ] && {
+    cat > /usr/share/ucitrack/luci-app-glorytun-udp.json << EEOF
+{
+    "config": "glorytun-udp",
+    "init": "glorytun-udp"
+}
+EEOF
+}
 
 uci -q batch <<-EOF >/dev/null
 	delete glorytun-udp[-1]

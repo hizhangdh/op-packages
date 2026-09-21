@@ -10,7 +10,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=tcptraceroute
 PKG_REALVERSION:=1.5beta7
 PKG_VERSION:=1.5_beta7
-PKG_RELEASE:=10
+PKG_RELEASE:=11
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_VERSION:=tcptraceroute-$(PKG_REALVERSION)
