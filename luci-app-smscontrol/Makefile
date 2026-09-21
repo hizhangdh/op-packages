@@ -10,7 +10,7 @@ LUCI_DEPENDS:=
 # Version: <major>.<minor>.<patch>
 PKG_VERSION:=0.2.0
 
-PKG_RELEASE:=12
+PKG_RELEASE:=13
 
 LUCI_TITLE:=LuCI utility to remote control via SMS
 

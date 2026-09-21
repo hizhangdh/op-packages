@@ -12,7 +12,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=wwand-lpac
 PKG_VERSION:=2.3.0
-PKG_RELEASE:=4
+PKG_RELEASE:=5
 
 PKG_LICENSE:=AGPL-3.0-only GPL-3.0-or-later curl
 PKG_MAINTAINER:=
@@ -20,7 +20,7 @@ PKG_MAINTAINER:=
 # lpac (primary source)
 PKG_SOURCE:=lpac-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/estkme-group/lpac/tar.gz/refs/tags/v$(PKG_VERSION)?
-PKG_HASH:=skip
+PKG_HASH:=661dffbd1e9e5732dab4a0bb0a9837d4906c8c66bd748bda262fe3e8d3e420f6
 # unique build dir (the lpac tarball's top dir is lpac-2.3.0, same as the stock
 # lpac package — extract it ourselves with --strip-components into our own dir)
 PKG_BUILD_DIR:=$(BUILD_DIR)/wwand-lpac-$(PKG_VERSION)
@@ -40,14 +40,14 @@ include $(INCLUDE_DIR)/package.mk
 define Download/wolfssl
   FILE:=wolfssl-$(WOLFSSL_VERSION).tar.gz
   URL:=https://github.com/wolfSSL/wolfssl/archive/v$(WOLFSSL_VERSION)
-  HASH:=skip
+  HASH:=2f4ef3d4fd387a9b3191d36a6316d69116c46ff69bb9583b6c82b36d7b8ca114
 endef
 $(eval $(call Download,wolfssl))
 
 define Download/curl
   FILE:=curl-$(CURL_VERSION).tar.xz
   URL:=https://github.com/curl/curl/releases/download/curl-8_21_0
-  HASH:=skip
+  HASH:=aa1b66a70eace83dc624508745646c08ae561de512ab403adffb93ac87fc72e6
 endef
 $(eval $(call Download,curl))
 
