@@ -132,7 +132,7 @@ jobs:
         git_clone https://github.com/sirpdboy/luci-app-watchdog watchdog1 && mvdir watchdog1
         git_clone https://github.com/sirpdboy/luci-app-cupsd cupsd1 && mv -n cupsd1/{luci-app-cupsd,cups} ./ ; rm -rf cupsd1
         # git_clone https://github.com/sirpdboy/luci-app-timecontrol timecontrol && mvdir timecontrol
-        git_clone https://github.com/sirpdboy/luci-theme-kucat
+        https://github.com/jerrykuku/luci-theme-argon
         git_clone https://github.com/sirpdboy/luci-app-kucat-config
         ) &
         (
@@ -178,7 +178,7 @@ jobs:
         git_clone https://github.com/ZeaKyX/luci-app-speedtest-web
         git_clone https://github.com/linkease/openwrt-app-actions
         git_clone https://github.com/Wulnut/luci-app-suselogin
-        git_clone https://github.com/mchome/openwrt-dogcom
+        #git_clone https://github.com/mchome/openwrt-dogcom
         git_clone https://github.com/lucikap/luci-app-brukamen && mv -n luci-app-brukamen/luci* ./;rm -rf luci-app-brukamen luci-app-autoshell_*.ipk
         git_clone https://github.com/yichya/luci-app-xray yichya && mv -f yichya/status ./luci-app-xray-status;mv -f yichya/core ./luci-app-xray;rm -rf yichya
         git_clone https://github.com/rafmilecki/luci-app-xjay
@@ -268,15 +268,15 @@ jobs:
         git_clone https://github.com/nosignals/openwrt-neko && mv openwrt-neko/luci-app-neko ./;rm -rf openwrt-neko
         git_clone https://github.com/ilxp/luci-app-ikoolproxy
         git_clone https://github.com/animegasan/luci-app-droidmodem
-        git_clone https://github.com/animegasan/luci-app-droidnet
+        #git_clone https://github.com/animegasan/luci-app-droidnet
         git_clone https://github.com/animegasan/luci-app-ipinfo
         git_clone https://github.com/animegasan/luci-app-dnsleaktest
-        git_clone https://github.com/animegasan/luci-app-gpioled
+        #git_clone https://github.com/animegasan/luci-app-gpioled
         # git_clone https://github.com/hingbong/hickory-dns-openwrt && mvdir hickory-dns-openwrt
         git_clone https://github.com/kenzok78/luci-app-guest-wifi
-        git_clone https://github.com/EkkoG/openwrt-natmap
+        #git_clone https://github.com/EkkoG/openwrt-natmap
         git_clone https://github.com/EkkoG/luci-app-natmap
-        git_clone https://github.com/yichya/openwrt-hv-tools
+        #git_clone https://github.com/yichya/openwrt-hv-tools
         git_clone https://github.com/ddimension/openwrt-repo && mv -f openwrt-repo/*wwand* ./;rm -rf openwrt-repo
         git_clone https://github.com/jerrykuku/luci-theme-argon
         git_clone https://github.com/jerrykuku/luci-app-argon-config
