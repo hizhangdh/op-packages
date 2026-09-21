@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=stm32flash
 PKG_VERSION:=0.7
-PKG_RELEASE:=6
+PKG_RELEASE:=7
 
 PKG_SOURCE:=stm32flash-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@SF/$(PKG_NAME)
