@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=LuCI Status Pages
-LUCI_DEPENDS:=+luci-base +luci-app-oui +libiwinfo +rpcd-mod-iwinfo +rpcd-mod-rrdns +ucode +ucode-mod-fs +ucode-mod-ubus +ucode-mod-socket
+LUCI_DEPENDS:=+luci-base +luci-app-oui +luci-mod-dashboard +libiwinfo +rpcd-mod-iwinfo +rpcd-mod-rrdns +ucode +ucode-mod-fs +ucode-mod-ubus +ucode-mod-socket
 
 PKG_RELEASE:=13
 PKG_BUILD_DEPENDS:=iwinfo
