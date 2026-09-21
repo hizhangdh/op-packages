@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xl2tpd-ext
 PKG_VERSION:=1
-PKG_RELEASE:=7
+PKG_RELEASE:=8
 PKG_BUILD_DIR:=$(BUILD_DIR)/xl2tpd-ext
 
 include $(INCLUDE_DIR)/package.mk

@@ -36,7 +36,7 @@ var callCPUInfo = rpc.declare({
 
 var callCPUUsage = rpc.declare({
 	object: 'luci',
-	method: 'getCPUUsage'
+	method: 'getTempInfo'
 });
 
 return baseclass.extend({
@@ -85,8 +85,7 @@ return baseclass.extend({
 
 		var fields = [
 			_('Hostname'),         boardinfo.hostname,
-			_('Model'),            boardinfo.model + cpubench.cpubench,
-			_('Architecture'),     cpuinfo.cpuinfo || boardinfo.system,
+			_('Architecture'),     (cpuinfo.cpuinfo || boardinfo.system) + ' ' + cpubench.cpubench,
 			_('Target Platform'),  (L.isObject(boardinfo.release) ? boardinfo.release.target : ''),
 			_('Firmware Version'), (L.isObject(boardinfo.release) ? boardinfo.release.description + ' / ' : '') + (luciversion || ''),
 			_('Kernel Version'),   boardinfo.kernel,
@@ -96,8 +95,7 @@ return baseclass.extend({
 				systeminfo.load[0] / 65535.0,
 				systeminfo.load[1] / 65535.0,
 				systeminfo.load[2] / 65535.0
-			) : null,
-			_('CPU usage (%)'),    cpuusage.cpuusage
+			) : null
 		];
 
 		if (cpuusage.tempinfo) {
