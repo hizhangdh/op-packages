@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=z8102
 PKG_VERSION:=0.2
-PKG_RELEASE:=14
+PKG_RELEASE:=15
 
 PKG_MAINTAINER:=Yannick Chabanois <contact@openmptcprouter.com>
 
