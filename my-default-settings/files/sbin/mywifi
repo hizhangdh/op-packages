@@ -187,7 +187,7 @@ for radio in $RADIOS; do
 
     band="$(detect_band "$radio")"
     case "$band" in
-        2g) suffix="_2.4G" ;;
+        2g) suffix="" ;;
         5g) suffix="_5G" ;;
         6g) suffix="_6G" ;;
         *)  suffix="_${band}" ;;
