@@ -19,9 +19,6 @@ sed -i -e '/profile.d/d' /lib/upgrade/keep.d/base-files \
 version=$(uci -q get base_config.@status[0].version)
 case "$version" in ''|*[!0-9]*) version=0 ;; esac
 
-for ip in $(uci -q get network.lan.ipaddr); do
-	case "$ip" in *.*) lan_ip="${ip%%/*}"; break ;; esac
-done
 lan_ip="${lan_ip:-192.168.1.3}"
 
 [ -z "$(uci -q get system.@system[0].hostname)" ] && uci -q set system.@system[0].hostname='MI-R3D'
@@ -101,13 +98,7 @@ if [ "$version" -lt 1 ]; then
 	version=1
 fi
 
-# 5. 默认后台域名映射与 Nginx 规则
-[ -z "$(uci -q get dhcp.default_server)" ] && uci -q batch <<-EOF
-	set dhcp.default_server=domain
-	set dhcp.default_server.name='MI-R3D'
-	set dhcp.default_server.ip='${lan_ip}'
-	set dhcp.default_server.comments='后台地址'
-EOF
+# 5. 默认 Nginx 规则
 
 if command -v nginx >/dev/null 2>&1; then
 	[ -z "$(uci -q get nginx.default_server)" ] && uci -q batch <<-EOF
