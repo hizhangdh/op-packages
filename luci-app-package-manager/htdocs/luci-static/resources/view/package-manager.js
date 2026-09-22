@@ -1198,7 +1198,7 @@ return view.extend({
 	render(listData) {
 			const checkUpdateNeeded = function() {
             return Promise.all([
-                L.resolveDefault(fs.stat('/tmp/opkg-lists/kwrt_kiddin9'), null),
+                L.resolveDefault(fs.stat('/tmp/opkg-lists/mi-r3d_kiddin9'), null),
                 L.resolveDefault(fs.read('/tmp/resolv.conf.d/resolv.conf.auto'), '')
             ]).then(function(results) {
                 const stat = results[0];
