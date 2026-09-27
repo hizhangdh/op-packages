@@ -16,9 +16,15 @@
  * Modules must not mutate state. host is cleared then rebuilt (idempotent replace).
  */
 
+function chipFieldLabel(spec) {
+	const mapped = log.filterFieldLabel(spec.key);
+	if (mapped !== spec.key) return mapped;
+	return spec.label || spec.key;
+}
+
 function chipValueNodes(spec, val) {
 	const key = spec.key;
-	const label = spec.label || key;
+	const label = chipFieldLabel(spec);
 	const p = log.parseFilterValue(val);
 	if (!p.value) return [''];
 
@@ -35,8 +41,8 @@ function chipValueNodes(spec, val) {
 	if (key === 'q' || key === 'src' || key === 'dst')
 		return [
 			label + ': ',
-			E('strong', { 'class': 'fwlive-chip-not' }, [_('not')]),
-			' contains ',
+			E('strong', { 'class': 'fwlive-chip-not' }, [_('does not contain')]),
+			' ',
 			valueNode
 		];
 

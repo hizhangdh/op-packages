@@ -97,6 +97,23 @@ function optionNodes(pairs) {
 	return opts;
 }
 
+function isIpv4Address(addr) {
+	if (addr.indexOf('.') === -1) return false;
+
+	const octets = addr.split('.');
+	if (octets.length !== 4) return false;
+	for (let i = 0; i < octets.length; i++) {
+		if (!/^\d{1,3}$/.test(octets[i]) || Number(octets[i]) > 255) return false;
+	}
+	return true;
+}
+
+/* Scoped IPv6 (`fe80::1%eth0`) still resolves as the bare address. */
+function stripIpZone(addr) {
+	const zone = addr.lastIndexOf('%');
+	return zone === -1 ? addr : addr.slice(0, zone);
+}
+
 return view.extend({
 	rowLimit: constants.DEFAULT_ROW_LIMIT,
 	fetchMode: constants.DEFAULT_FETCH_MODE,
@@ -132,6 +149,7 @@ return view.extend({
 	summaryRowsShown: false,
 	summaryData: null,
 	resolveLoadShed: false,
+	resolveShedUntil: 0,
 	filterInputTimer: null,
 	messageLayout: 'wrap',
 	/* Session-new IDs from the last applied batch; this is not buffer growth. */
@@ -144,7 +162,10 @@ return view.extend({
 	hostnameFailed: null,
 	resolveInFlight: false,
 	resolveGeneration: 0,
+	/* Coalesce hostname-cache paints deferred while tablePaused. */
+	resolvePaintPending: false,
 	lastPollError: false,
+	lastPollErrorCode: null,
 	lastRulesError: null,
 	followLive: true,
 	rulesMap: {},
@@ -152,8 +173,11 @@ return view.extend({
 	viewMode: 'simple',
 	expandedRowId: null,
 	loggingStatus: null,
+	/* Invalidates status reads started before a newer toggle or refresh. */
+	loggingStatusReadGeneration: 0,
 	loggingBusy: false,
 	loggingNotice: '',
+	_loggingNoticeFromToggle: false,
 	/* Session-only dismiss of first-run consent (Not now without checkbox). */
 	consentDismissedSession: false,
 	_loggingToolbarSig: '',
@@ -200,7 +224,7 @@ return view.extend({
 			parts.push('maxraw=%s'.format(encodeURIComponent(this.manualFetchLines)));
 		}
 		if (this.viewMode === 'detailed') parts.push('view=detailed');
-		location.hash = parts.join('&');
+		history.replaceState(history.state, '', '#' + parts.join('&'));
 	},
 
 	hashEntries() {
@@ -209,13 +233,13 @@ return view.extend({
 		const entries = location.hash.substring(1).split('&');
 		const result = [];
 		for (let i = 0; i < entries.length; i++) {
-			const kv = entries[i].split('=');
-			if (kv.length !== 2) continue;
+			const separator = entries[i].indexOf('=');
+			if (separator === -1) continue;
 			let key;
 			let val;
 			try {
-				key = decodeURIComponent(kv[0]);
-				val = decodeURIComponent(kv[1]);
+				key = decodeURIComponent(entries[i].substring(0, separator));
+				val = decodeURIComponent(entries[i].substring(separator + 1));
 			} catch (_e) {
 				continue;
 			}
@@ -344,6 +368,14 @@ return view.extend({
 		this.fillingBuffer = !shortRead && (rawCount === null || rawCount >= effective || grew);
 	},
 
+	hashFilterKeyAllowed(key) {
+		const fields = this.FILTER_CHIP_FIELDS;
+		for (let i = 0; i < fields.length; i++) {
+			if (fields[i].key === key) return true;
+		}
+		return false;
+	},
+
 	applyHash() {
 		this.resolveRpcPreferences();
 
@@ -352,17 +384,14 @@ return view.extend({
 			const key = entries[i].key;
 			const val = entries[i].val;
 			if (key === 'limit' || key === 'poll' || key === 'maxraw') continue;
+			if (key === 'fetch-mode' || key === 'row-tint') continue;
 			if (key === 'view') {
 				if (val === 'advanced' || val === 'detailed') this.viewMode = 'detailed';
 				else if (val === 'simple') this.viewMode = 'simple';
 				continue;
 			}
-			const el = document.getElementById('fwlive-' + key);
-			if (key === 'proto') {
-				proto.setProtoFilterValue(val);
-				continue;
-			}
-			if (el) el.value = val;
+			if (!this.hashFilterKeyAllowed(key)) continue;
+			this.setFilterFieldValue(key, val);
 		}
 	},
 
@@ -395,8 +424,20 @@ return view.extend({
 		return constants.DEFAULT_ROW_TINT;
 	},
 
+	readRowTintPalette() {
+		const v = storedValue('fwlive-row-tint-palette', null);
+		if (v === 'accessible') return 'accessible';
+		if (v === 'classic') return 'classic';
+		/* Migrate an enabled legacy mode into the separate palette key. */
+		return this.readRowTint() === 'accessible' ? 'accessible' : 'classic';
+	},
+
 	saveRowTint() {
 		storeValue('fwlive-row-tint', this.rowTint);
+	},
+
+	saveRowTintPalette() {
+		storeValue('fwlive-row-tint-palette', this.rowTintPalette);
 	},
 
 	rowTintPaletteOptions() {
@@ -433,6 +474,7 @@ return view.extend({
 
 	commitRowTintChange() {
 		this.saveRowTint();
+		this.saveRowTintPalette();
 		this.tintProbeDone = false;
 		this.applyRowTintMode();
 		this.updateRowTintUi();
@@ -443,7 +485,10 @@ return view.extend({
 		const v = ev && ev.target ? ev.target.value : 'classic';
 		const pal = v === 'accessible' ? 'accessible' : 'classic';
 		this.rowTintPalette = pal;
-		if (!this.rowTintEnabled()) return;
+		if (!this.rowTintEnabled()) {
+			this.saveRowTintPalette();
+			return;
+		}
 		this.rowTint = pal;
 		this.commitRowTintChange();
 	},
@@ -545,9 +590,39 @@ return view.extend({
 	},
 
 	isLikelyIp(addr) {
+		if (typeof addr !== 'string' || !addr) return false;
+		addr = stripIpZone(addr);
 		if (!addr) return false;
+		if (isIpv4Address(addr)) return true;
+		if (!addr.includes(':') || !/^[\da-f:.]+$/i.test(addr) || addr.includes(':::'))
+			return false;
 
-		return /^[\da-fA-F:.]+$/.test(addr);
+		const compression = addr.indexOf('::');
+		if (compression !== -1 && addr.indexOf('::', compression + 2) !== -1) return false;
+		/* A stray leading/trailing colon is not part of a single `::`. */
+		if (addr[0] === ':' && addr[1] !== ':') return false;
+		if (addr[addr.length - 1] === ':' && addr[addr.length - 2] !== ':') return false;
+
+		let groups;
+		let embeddedIpv4 = false;
+		if (addr.includes('.')) {
+			const lastColon = addr.lastIndexOf(':');
+			if (lastColon === -1 || !isIpv4Address(addr.substring(lastColon + 1))) return false;
+			groups = addr.substring(0, lastColon).split(':').filter(Boolean);
+			embeddedIpv4 = true;
+		} else {
+			groups = addr.split(':').filter(Boolean);
+		}
+
+		if (
+			groups.some(function (group) {
+				return !/^[\da-f]{1,4}$/i.test(group);
+			})
+		)
+			return false;
+
+		const groupCount = groups.length + (embeddedIpv4 ? 2 : 0);
+		return compression === -1 ? groupCount === 8 : groupCount < 8;
 	},
 
 	activeColumns() {
@@ -616,17 +691,21 @@ return view.extend({
 		table.renderThead(el, { columns: this.activeColumns().slice() }, {});
 	},
 
-	async loadRulesMap() {
+	isCurrentPollEpoch(epoch) {
+		return !this.viewDisposed && (epoch == null || epoch === this.currentPollEpoch());
+	},
+
+	async loadRulesMap(epoch) {
 		try {
 			const res = await callFwliveRules();
-			if (this.viewDisposed) return;
+			if (!this.isCurrentPollEpoch(epoch)) return;
 			this.rulesMap = (res && res.rules) || {};
 			this.firewallBackend = (res && res.backend) || 'nft';
 			/* Bounds / mktemp failures are reply.error — same idea as poll. */
 			this.lastRulesError = (res && res.error) || null;
 			if (this.lastRulesError) console.warn('fwlive rules map error:', this.lastRulesError);
 		} catch (_e) {
-			if (this.viewDisposed) return;
+			if (!this.isCurrentPollEpoch(epoch)) return;
 			this.rulesMap = {};
 			this.firewallBackend = 'nft';
 			this.lastRulesError = 'rules_unavailable';
@@ -645,9 +724,10 @@ return view.extend({
 
 		const label = document.getElementById('fwlive-backend');
 		if (label) {
+			const warnings = (this.loggingStatus && this.loggingStatus.warnings) || [];
 			let text = this.backendDisplayLabel();
 			let degraded = false;
-			if (this.lastRulesError) {
+			if (this.lastRulesError && this.lastRulesError !== 'timeout_missing') {
 				let err = '';
 				if (this.lastRulesError === 'rules_truncated')
 					err = _('Rule labels incomplete — map truncated');
@@ -655,12 +735,6 @@ return view.extend({
 					err = _('Rule labels unavailable — temp file failed');
 				else err = _('Rule labels unavailable');
 				text = text ? text + ' \u00b7 ' + err : err;
-				degraded = true;
-			}
-			const warnings = (this.loggingStatus && this.loggingStatus.warnings) || [];
-			if (warnings.indexOf('timeout_missing') >= 0) {
-				const warn = _('Limited diagnostics — timeout command missing');
-				text = text ? text + ' \u00b7 ' + warn : warn;
 				degraded = true;
 			}
 			if (warnings.indexOf('legacy_iptables_detected') >= 0) {
@@ -677,25 +751,35 @@ return view.extend({
 		this.updateEmptyStateUi();
 	},
 
-	async loadLoggingStatus() {
+	async loadLoggingStatus(epoch) {
+		const readGeneration = ++this.loggingStatusReadGeneration;
 		const wasWeakDevice = this.weakDevice;
 		try {
 			const status = await callFwliveLoggingStatus();
-			if (this.viewDisposed) return;
+			if (
+				!this.isCurrentPollEpoch(epoch) ||
+				readGeneration !== this.loggingStatusReadGeneration
+			)
+				return;
 			this.loggingStatus = status;
-			this.loggingNotice = '';
+			if (!this._loggingNoticeFromToggle) this.loggingNotice = '';
 			this.weakDevice = !!(this.loggingStatus && this.loggingStatus.weak_device === true);
 		} catch (_e) {
-			if (this.viewDisposed) return;
-			/* Keep last toolbar state. Do not clobber a toggle success/failure notice. */
+			if (
+				!this.isCurrentPollEpoch(epoch) ||
+				readGeneration !== this.loggingStatusReadGeneration
+			)
+				return;
+			/* Keep last-known toolbar; unknown until the first successful fetch. */
 			if (!this.loggingNotice)
-				this.loggingNotice = _(
-					'Could not refresh logging status; showing the last known state.'
-				);
+				this.loggingNotice = this.loggingStatus
+					? _('Could not refresh logging status; showing the last known state.')
+					: _('Could not load logging status.');
 		}
 		this.updateBackendUi();
 		this.updateLoggingToolbarUi();
 		this.updateEmptyStateUi();
+		this.updateStatus();
 		if (wasWeakDevice !== this.weakDevice && document.getElementById('fwlive-table'))
 			this.renderRows(true);
 	},
@@ -703,19 +787,24 @@ return view.extend({
 	async runLoggingToggle(opts) {
 		if (this.loggingBusy) return;
 
+		/* Older recovery reads must not overwrite this toggle's later status. */
+		this.loggingStatusReadGeneration++;
 		this.loggingBusy = true;
 		this.loggingNotice = '';
+		this._loggingNoticeFromToggle = false;
 		opts.initialUi();
 
 		try {
 			const res = await opts.call();
 			if (!res || !res.ok) {
 				this.loggingNotice = opts.failureNotice(res);
+				this._loggingNoticeFromToggle = true;
 				await this.loadLoggingStatus();
 				return;
 			}
 
 			this.loggingNotice = opts.successNotice(res);
+			this._loggingNoticeFromToggle = !!this.loggingNotice;
 			if (opts.onSuccess) opts.onSuccess(res);
 			if (this.loggingStatus && typeof opts.wanLog === 'boolean')
 				this.loggingStatus = Object.assign({}, this.loggingStatus, {
@@ -724,8 +813,11 @@ return view.extend({
 			await this.loadLoggingStatus();
 		} catch (_e) {
 			this.loggingNotice = opts.catchNotice();
+			this._loggingNoticeFromToggle = true;
 			await this.loadLoggingStatus();
 		} finally {
+			/* Survive only the refresh owned by this toggle. */
+			this._loggingNoticeFromToggle = false;
 			this.loggingBusy = false;
 			this.updateEmptyStateUi();
 			this.updateLoggingToolbarUi();
@@ -747,6 +839,14 @@ return view.extend({
 					return _(
 						'Another change is staged for the firewall; apply or revert it first.'
 					);
+				if (res && res.error === 'no_wan_zone')
+					return _('No WAN zone found; cannot toggle logging without one.');
+				if (res && res.error === 'lock_failed')
+					return _('Could not acquire the logging lock.');
+				if (res && res.error === 'baseline_snapshot_failed')
+					return _('Could not snapshot the current logging state.');
+				if (res && res.error === 'firewall_reload_failed')
+					return _('The firewall did not reload; saved and live logging may differ.');
 				return _('Could not enable logging.');
 			},
 			successNotice: (res) =>
@@ -770,6 +870,12 @@ return view.extend({
 					return _(
 						'Another change is staged for the firewall; apply or revert it first.'
 					);
+				if (res && res.error === 'no_wan_zone')
+					return _('No WAN zone found; cannot toggle logging without one.');
+				if (res && res.error === 'lock_failed')
+					return _('Could not acquire the logging lock.');
+				if (res && res.error === 'firewall_reload_failed')
+					return _('The firewall did not reload; saved and live logging may differ.');
 				return _('Could not disable logging.');
 			},
 			successNotice: (res) => (res.changed ? _('WAN drop/reject logging is off.') : ''),
@@ -798,7 +904,6 @@ return view.extend({
 		return {
 			loggingStatus: this.loggingStatus,
 			loggingBusy: this.loggingBusy,
-			entriesLength: this.entries.length,
 			loggingNotice: this.loggingNotice,
 			showConsent: this.shouldShowLoggingConsent()
 		};
@@ -856,10 +961,13 @@ return view.extend({
 	resolveRuleLabel(hint) {
 		if (!hint) return '';
 
-		if (this.rulesMap[hint]) return this.rulesMap[hint];
+		const own = Object.prototype.hasOwnProperty;
+		if (own.call(this.rulesMap, hint) && typeof this.rulesMap[hint] === 'string')
+			return this.rulesMap[hint];
 
 		const slug = hint.toLowerCase();
-		if (this.rulesMap[slug]) return this.rulesMap[slug];
+		if (own.call(this.rulesMap, slug) && typeof this.rulesMap[slug] === 'string')
+			return this.rulesMap[slug];
 
 		return log.formatRuleLabel(hint);
 	},
@@ -867,6 +975,23 @@ return view.extend({
 	enrichEntry(row) {
 		row.rule_label = this.resolveRuleLabel(row.rule_hint);
 		return row;
+	},
+
+	refreshBufferedRuleLabels() {
+		let changed = false;
+		for (let i = 0; i < this.entries.length; i++) {
+			const row = this.entries[i];
+			const label = this.resolveRuleLabel(row.rule_hint);
+			if (row.rule_label !== label) {
+				row.rule_label = label;
+				changed = true;
+			}
+		}
+
+		/* Keep buffered rows current without painting a paused or hidden table. */
+		if (changed && !this.tablePaused && (!this.summaryMode || this.summaryRowsShown))
+			this.renderRows(true);
+		return changed;
 	},
 
 	normalizePollBatch(raw) {
@@ -909,11 +1034,14 @@ return view.extend({
 
 	/* Caller must discard stale epochs before this synchronous application.
 	 * This updates transport/adaptive state, summary/banner UI, rows, and buffer. */
-	failPollReply(rtt) {
+	failPollReply(rtt, errorCode) {
 		this.lastPollError = true;
+		this.lastPollErrorCode = typeof errorCode === 'string' ? errorCode : null;
+		this.lastBatchNewIdCount = 0;
 		this.fillingBuffer = false;
 		this.notePollRtt(rtt, true);
 		this.updateAdaptiveBanner();
+		if (this.lastPollErrorCode === 'timeout_missing') this.updateBackendUi();
 	},
 
 	applyPollReply(poll, context) {
@@ -930,7 +1058,7 @@ return view.extend({
 			return;
 		}
 		if (reply.error) {
-			this.failPollReply(rtt);
+			this.failPollReply(rtt, reply.error);
 			return;
 		}
 		const raw = reply.log;
@@ -940,6 +1068,7 @@ return view.extend({
 		}
 
 		this.lastPollError = false;
+		this.lastPollErrorCode = null;
 		if (reply.adaptive === 0 || reply.adaptive === false) this.serverAdaptive = 0;
 		else if (reply.adaptive === 1 || reply.adaptive === true) this.serverAdaptive = 1;
 		else this.serverAdaptive = undefined;
@@ -1004,12 +1133,19 @@ return view.extend({
 		/* Visibility changes and disposal invalidate all application of this reply. */
 		if (epoch !== this.currentPollEpoch()) return;
 
+		const recoveringTimeoutProvider = this.lastPollErrorCode === 'timeout_missing';
 		this.applyPollReply(poll, {
 			beforeLength: beforeLength,
 			fetchLines: fetchLines,
 			pausedAtStart: pausedAtStart,
 			resumeMerge: resumeMerge
 		});
+		if (recoveringTimeoutProvider && !this.lastPollError) {
+			await Promise.all([this.loadRulesMap(epoch), this.loadLoggingStatus(epoch)]);
+			/* Recovery RPCs can outlive the poll epoch; don't repaint stale views. */
+			if (epoch !== this.currentPollEpoch() || this.viewDisposed) return;
+			this.refreshBufferedRuleLabels();
+		}
 	},
 
 	rememberSessionId(id) {
@@ -1054,10 +1190,9 @@ return view.extend({
 					constants.WEAK_DEVICE_DISPLAY_ROW_CAP
 				)
 			);
-		if (this.degradedSampling && this.serverAdaptive !== 0) bits.push(_('Degraded — sampling'));
-		if (this.serverTruncated && this.serverAdaptive !== 0) bits.push(_('truncated'));
-		if (this.resolveLoadShed && this.serverAdaptive !== 0)
-			bits.push(_('resolve paused (load)'));
+		if (this.degradedSampling) bits.push(_('Degraded — sampling'));
+		if (this.serverTruncated) bits.push(_('truncated'));
+		if (this.resolveLoadShed) bits.push(_('resolve paused (load)'));
 		if (!this.tablePaused && !this.followLive)
 			bits.push(_('scroll frozen — scroll to top to follow live'));
 		return bits.length ? ' — ' + bits.join(', ') : '';
@@ -1308,23 +1443,28 @@ return view.extend({
 		this.updateSummaryUi();
 	},
 
-	updateSummaryUi() {
-		const card = document.getElementById('fwlive-summary');
+	syncEmptyScrollVisibility(rowCount) {
+		const hideTable = this.summaryMode && !this.summaryRowsShown;
 		const scroll = document.getElementById('fwlive-scroll');
 		const empty = document.getElementById('fwlive-empty');
+		if (scroll) {
+			if (!scroll.style) scroll.style = { display: '' };
+			scroll.style.display = hideTable ? 'none' : '';
+		}
+		if (empty) {
+			if (!empty.style) empty.style = { display: '' };
+			empty.style.display = hideTable ? 'none' : rowCount ? 'none' : 'block';
+		}
+	},
+
+	updateSummaryUi() {
+		const card = document.getElementById('fwlive-summary');
 		const toggle = document.getElementById('fwlive-summary-rows');
 		if (card) {
 			if (!card.style) card.style = { display: '' };
 			card.style.display = this.summaryMode ? 'block' : 'none';
 		}
-		if (scroll) {
-			if (!scroll.style) scroll.style = { display: '' };
-			scroll.style.display = this.summaryMode && !this.summaryRowsShown ? 'none' : '';
-		}
-		if (empty) {
-			if (!empty.style) empty.style = { display: '' };
-			empty.style.display = this.summaryMode && !this.summaryRowsShown ? 'none' : '';
-		}
+		this.syncEmptyScrollVisibility(this.filteredRows().length);
 		if (toggle) {
 			toggle.textContent = this.summaryRowsShown ? _('Hide rows') : _('Show rows');
 			toggle.setAttribute('aria-pressed', this.summaryRowsShown ? 'true' : 'false');
@@ -1345,13 +1485,12 @@ return view.extend({
 		this.summaryData = null;
 		this.updateSummaryUi();
 		if (this.tablePaused) {
-			const empty = document.getElementById('fwlive-empty');
-			if (empty) {
-				const rows = this.filteredRows();
-				empty.style.display = rows.length ? 'none' : 'block';
-			}
+			this.syncEmptyScrollVisibility(this.filteredRows().length);
 			this.updateStatus();
-		} else this.renderRows(true);
+		} else {
+			this.resolvePaintPending = false;
+			this.renderRows(true);
+		}
 	},
 
 	onSummaryRowsToggle() {
@@ -1363,6 +1502,16 @@ return view.extend({
 
 	scheduleRenderRows(force) {
 		this.ensureRenderScheduler().schedule(!!force);
+	},
+
+	scheduleResolvePaint() {
+		if (this.tablePaused) {
+			this.resolvePaintPending = true;
+			this.updateStatus();
+			return;
+		}
+		this.resolvePaintPending = false;
+		this.scheduleRenderRows(true);
 	},
 
 	updateFloodBanner() {
@@ -1421,7 +1570,10 @@ return view.extend({
 
 		if (this.lastPollError) {
 			status.className = 'fwlive-status fwlive-status-error';
-			status.textContent = _('Connection lost — retrying…') + suffix;
+			status.textContent =
+				this.lastPollErrorCode === 'timeout_missing'
+					? _('Installation is incomplete. Reinstall luci-app-fwlive.')
+					: _('Connection lost — retrying…') + suffix;
 			this.updateAdaptiveBanner();
 			return;
 		}
@@ -1537,6 +1689,7 @@ return view.extend({
 		}
 
 		if (wasPaused && !this.tablePaused) {
+			this.pauseBufferLoading = false;
 			this.fillingBuffer = false;
 			this.followLive = true;
 			/* Merge pause buffer with the first live poll — do not replace. */
@@ -1545,7 +1698,10 @@ return view.extend({
 			this.requestPoll()
 				.then(() => {
 					/* A hide/show bump abandons this epoch; the catch-up poll paints. */
-					if (epoch === this.currentPollEpoch()) this.renderRows(true);
+					if (epoch === this.currentPollEpoch()) {
+						this.resolvePaintPending = false;
+						this.renderRows(true);
+					}
 				})
 				.catch(function () {});
 		}
@@ -1561,8 +1717,7 @@ return view.extend({
 		/* Reset flood throttle so Limit changes paint even during ping -A. */
 		this.ensureRenderScheduler().resetBudget();
 		const cancelForce = this.ensureRenderScheduler().forceNextRender();
-		if (!this.tablePaused) this.renderRows(true);
-		else this.updateStatus();
+		this.renderRows(true);
 		const epoch = this.currentPollEpoch();
 		this.requestPoll()
 			.then(() => {
@@ -1628,8 +1783,8 @@ return view.extend({
 
 		for (let i = 0; i < entries.length; i++) {
 			const r = entries[i];
-			if (r.src && this.isLikelyIp(r.src)) ips.add(r.src);
-			if (r.dst && this.isLikelyIp(r.dst)) ips.add(r.dst);
+			if (r.src && this.isLikelyIp(r.src)) ips.add(stripIpZone(r.src));
+			if (r.dst && this.isLikelyIp(r.dst)) ips.add(stripIpZone(r.dst));
 		}
 
 		return Array.from(ips);
@@ -1712,7 +1867,7 @@ return view.extend({
 			}
 
 			this.updateAdaptiveBanner();
-			if (updated) this.scheduleRenderRows(true);
+			if (updated) this.scheduleResolvePaint();
 		} catch (_e) {
 			/* resolve unavailable — show IPs */
 		} finally {
@@ -1831,8 +1986,7 @@ return view.extend({
 		this.messageLayout = next;
 		this.saveMessageLayout();
 		this.updateMessageLayoutUi();
-		if (this.tablePaused) this.updateStatus();
-		else this.renderRows(true);
+		this.renderRows(true);
 	},
 
 	renderRows(force) {
@@ -1840,7 +1994,6 @@ return view.extend({
 		if (!el || typeof el.querySelector !== 'function') return;
 
 		const body = el.querySelector('tbody');
-		const empty = document.getElementById('fwlive-empty');
 		const scroll = document.getElementById('fwlive-scroll');
 		this.updateHash(this.readFilters());
 
@@ -1854,6 +2007,7 @@ return view.extend({
 
 		if (!paint) {
 			this.updateFloodBanner();
+			this.syncEmptyScrollVisibility(rows.length);
 			this.updateStatus(rows);
 			return;
 		}
@@ -1862,7 +2016,7 @@ return view.extend({
 
 		const prevScroll = scroll ? scroll.scrollTop : 0;
 
-		if (empty) empty.style.display = rows.length ? 'none' : 'block';
+		this.syncEmptyScrollVisibility(rows.length);
 		this.updateStatus(rows);
 		this.renderFilterChips();
 
@@ -1871,7 +2025,8 @@ return view.extend({
 			{
 				rows: rows.slice(),
 				columns: this.activeColumns().slice(),
-				forceRender: !!force,
+				/* force only bypasses the paint budget; the key sees expand/hostnames. */
+				forceRender: false,
 				viewMode: this.viewMode,
 				messageLayout: this.messageLayout,
 				expandedRowId: this.expandedRowId,
@@ -1925,7 +2080,9 @@ return view.extend({
 		const scroll = ev && ev.target;
 		if (!scroll || this.tablePaused) return;
 
-		this.followLive = scroll.scrollTop < 8;
+		const now = scroll.scrollTop < 8;
+		if (now === this.followLive) return;
+		this.followLive = now;
 		this.updateStatus();
 	},
 
@@ -2002,7 +2159,10 @@ return view.extend({
 				/* fetchEntries already accounts the poll RTT for every rpc
 				 * outcome; a throw here is a local normalize/buffer bug, not
 				 * network slowness, so count nothing further. */
-				if (epoch === this.currentPollEpoch()) this.lastPollError = true;
+				if (epoch === this.currentPollEpoch()) {
+					this.lastPollError = true;
+					this.lastPollErrorCode = null;
+				}
 			}
 
 			if (epoch !== this.currentPollEpoch()) return;
@@ -2011,8 +2171,21 @@ return view.extend({
 			 * cadence state; summary mode can therefore appear while rows are paused
 			 * and stays behind the explicit Show rows control. */
 			if (this.tablePaused) this.updateStatus();
-			else if (this.summaryMode) this.renderSummary();
-			else this.scheduleRenderRows();
+			else if (this.summaryMode) {
+				this.renderSummary();
+				this.updateStatus();
+				if (this.summaryRowsShown) {
+					const forceHostnamePaint = this.resolvePaintPending;
+					this.resolvePaintPending = false;
+					this.scheduleRenderRows(forceHostnamePaint);
+				}
+			} else {
+				/* Stale resume skips renderRows(true); catch-up polls must still
+				 * flush coalesced hostname paints. */
+				const forceHostnamePaint = this.resolvePaintPending;
+				this.resolvePaintPending = false;
+				this.scheduleRenderRows(forceHostnamePaint);
+			}
 
 			try {
 				await this.resolveHostnamesForEntries(this.filteredRows());
@@ -2022,7 +2195,10 @@ return view.extend({
 		} catch (_e) {
 			/* Keep the coordinator promise settling so a queued refresh cannot
 			 * be stranded by an unexpected local rendering failure. */
-			if (epoch === this.currentPollEpoch()) this.lastPollError = true;
+			if (epoch === this.currentPollEpoch()) {
+				this.lastPollError = true;
+				this.lastPollErrorCode = null;
+			}
 		}
 	},
 
@@ -2381,11 +2557,11 @@ return view.extend({
 							}),
 							E('select', { 'id': 'fwlive-action', 'class': 'cbi-input-select' }, [
 								E('option', { 'value': '' }, [_('Any action')]),
-								E('option', { 'value': 'pass' }, ['pass']),
-								E('option', { 'value': 'block' }, ['block']),
-								E('option', { 'value': 'drop' }, ['drop']),
-								E('option', { 'value': 'reject' }, ['reject']),
-								E('option', { 'value': 'unknown' }, ['unknown']),
+								E('option', { 'value': 'pass' }, [_('pass')]),
+								E('option', { 'value': 'block' }, [_('block')]),
+								E('option', { 'value': 'drop' }, [_('drop')]),
+								E('option', { 'value': 'reject' }, [_('reject')]),
+								E('option', { 'value': 'unknown' }, [_('unknown')]),
 								E('option', { 'value': '!pass' }, [_('not pass')]),
 								E('option', { 'value': '!drop' }, [_('not drop')]),
 								E('option', { 'value': '!block' }, [_('not block')]),
@@ -2481,11 +2657,12 @@ return view.extend({
 		this.messageLayout = this.readMessageLayout();
 		this.showHostnames = this.readShowHostnames();
 		this.rowTint = this.readRowTint();
-		this.rowTintPalette = this.rowTintEnabled() ? this.rowTint : 'classic';
+		this.rowTintPalette = this.readRowTintPalette();
 		this.hostnameCache = new Map();
 		this.hostnameFailed = new Map();
 		this.resolveGeneration = 0;
 		this.lastPollError = false;
+		this.lastPollErrorCode = null;
 		this.applyHash();
 		this.attachHandlers();
 		this.applyRowTintMode();
@@ -2500,7 +2677,8 @@ return view.extend({
 		this.updateTintWarnUi();
 		this.renderRows(true);
 		const testLi = document.getElementById('fwlive-manual-test');
-		if (testLi) logging.renderManualTestNodes(testLi, {}, {});
+		if (testLi)
+			logging.renderManualTestNodes(testLi, { firewallBackend: this.firewallBackend }, {});
 		if (this.showHostnames) this.resolveHostnamesForEntries(this.filteredRows());
 	}
 });

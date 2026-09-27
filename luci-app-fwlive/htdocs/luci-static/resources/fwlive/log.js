@@ -5,85 +5,119 @@
 
 /**
  * Shared classify logic mirrors core/fwlive-log.js CLASSIFY_SPEC — keep in sync
- * (gen-luci-wrapper.js gates full-spec drift; ./scripts/gen-all.sh verifies).
+ * (gen-luci-wrapper.js gates full-spec + regex drift; ./scripts/gen-all.sh verifies).
  * LuCI-only helpers live in the @fwlive-codegen:luci-preserve region.
  */
+const CLASSIFY_SPEC = {
+	glueKeys: [
+		'IN',
+		'OUT',
+		'SRC',
+		'DST',
+		'PROTO',
+		'SPT',
+		'DPT',
+		'LEN',
+		'MAC',
+		'TYPE',
+		'CODE',
+		'TTL',
+		'TOS',
+		'PREC',
+		'DF'
+	],
+	/* Classify trim (not JS String#trim): ASCII space/tab/LF/CR + NBSP (U+00A0). */
+	trimWhitespace: [' ', '\t', '\n', '\r', '\u00a0'],
+	nonFirewallPrefixes: [
+		'dnsmasq',
+		'procd',
+		'ubusd',
+		'netifd',
+		'odhcpd',
+		'logd',
+		'dropbear',
+		'uhttpd',
+		'hostapd',
+		'wpad'
+	],
+	nonFirewallPrefixHyphenContinuation: true,
+	firewallHints: ['fw4', 'nft', 'iptables', 'kernel', 'firewall'],
+	actionWords: ['ACCEPT', 'ALLOW', 'PASS', 'DROP', 'REJECT', 'DENY', 'BLOCK'],
+	rules: [
+		{
+			or: [
+				{ and: [{ kv: ['SRC'] }, { kv: ['DST'] }] },
+				{
+					and: [
+						{ kvAny: ['IN', 'OUT'] },
+						{ kvAny: ['SRC', 'DST', 'PROTO', 'SPT', 'DPT'] }
+					]
+				},
+				{ and: [{ action: 'known' }, { kvAny: ['IN', 'OUT', 'PROTO', 'SRC', 'DST'] }] }
+			]
+		},
+		{ and: [{ hint: true }, { action: 'known' }] },
+		{ and: [{ hint: true }, { kvAny: ['IN', 'OUT', 'SRC', 'DST', 'PROTO'] }] }
+	]
+};
+
+function wordPattern(words) {
+	const alt = words.join('|');
+	return new RegExp('(^|[^A-Za-z0-9_])(' + alt + ')([^A-Za-z0-9_]|$)', 'i');
+}
+
+function classifyTrim(s) {
+	const ws = CLASSIFY_SPEC.trimWhitespace;
+	let start = 0;
+	let end = s.length;
+	while (start < end && ws.indexOf(s.charAt(start)) >= 0) start++;
+	while (end > start && ws.indexOf(s.charAt(end - 1)) >= 0) end--;
+	return s.slice(start, end);
+}
+
+/* ---- spec-derived classification regexes (mirror core/fwlive-log.js) ---- */
+const DENY_CLASS_WORDS = CLASSIFY_SPEC.actionWords.slice(3);
+const NON_FIREWALL_PREFIX = new RegExp(
+	'^(' +
+		CLASSIFY_SPEC.nonFirewallPrefixes.join('|') +
+		')(' +
+		(CLASSIFY_SPEC.nonFirewallPrefixHyphenContinuation ? '[^A-Za-z0-9_-]' : '[^A-Za-z0-9_]') +
+		'|$)',
+	'i'
+);
+const FIREWALL_HINT = wordPattern(CLASSIFY_SPEC.firewallHints);
+const ACTION_RE = wordPattern(CLASSIFY_SPEC.actionWords);
+const DENY_ACTION = wordPattern(DENY_CLASS_WORDS);
+const DENY_ACTION_UNDERSCORE = new RegExp(
+	'(?:^|[^A-Za-z0-9])(?:' + DENY_CLASS_WORDS.join('|') + ')(?:[^A-Za-z0-9]|$)',
+	'i'
+);
+const NETFILTER_KV_GLUE = new RegExp(
+	'([^\\s])(?=(' + CLASSIFY_SPEC.glueKeys.join('|') + ')=)',
+	'g'
+);
+
 return baseclass.extend({
-	CLASSIFY_SPEC: {
-		glueKeys: [
-			'IN',
-			'OUT',
-			'SRC',
-			'DST',
-			'PROTO',
-			'SPT',
-			'DPT',
-			'LEN',
-			'MAC',
-			'TYPE',
-			'CODE',
-			'TTL',
-			'TOS',
-			'PREC',
-			'DF'
-		],
-		nonFirewallPrefixes: [
-			'dnsmasq',
-			'procd',
-			'ubusd',
-			'netifd',
-			'odhcpd',
-			'logd',
-			'dropbear',
-			'uhttpd',
-			'hostapd',
-			'wpad'
-		],
-		nonFirewallPrefixHyphenContinuation: true,
-		firewallHints: ['fw4', 'nft', 'iptables', 'kernel', 'firewall'],
-		actionWords: ['ACCEPT', 'ALLOW', 'PASS', 'DROP', 'REJECT', 'DENY', 'BLOCK'],
-		rules: [
-			{
-				or: [
-					{ and: [{ kv: ['SRC'] }, { kv: ['DST'] }] },
-					{
-						and: [
-							{ kvAny: ['IN', 'OUT'] },
-							{ kvAny: ['SRC', 'DST', 'PROTO', 'SPT', 'DPT'] }
-						]
-					},
-					{ and: [{ action: 'known' }, { kvAny: ['IN', 'OUT', 'PROTO', 'SRC', 'DST'] }] }
-				]
-			},
-			{ and: [{ hint: true }, { action: 'known' }] },
-			{ and: [{ hint: true }, { kvAny: ['IN', 'OUT', 'SRC', 'DST', 'PROTO'] }] }
-		]
-	},
+	CLASSIFY_SPEC: CLASSIFY_SPEC,
 
 	TCP_FLAG_TAIL:
-		/\b((?:SYN|ACK|FIN|RST|PSH|URG)(?:\s+(?:SYN|ACK|FIN|RST|PSH|URG))*)(?:\s+[A-Z][A-Z0-9_]*=[^\s]+)*\s*$/i,
-	NETFILTER_KV_GLUE:
-		/([^\s])(?=(IN|OUT|SRC|DST|PROTO|SPT|DPT|LEN|MAC|TYPE|CODE|TTL|TOS|PREC|DF)=)/g,
-
-	wordPattern: function (words) {
-		const alt = words.join('|');
-		return new RegExp('(^|[^A-Za-z0-9_])(' + alt + ')([^A-Za-z0-9_]|$)', 'i');
-	},
+		/\b((?:SYN|ACK|FIN|RST|PSH|URG|ECE|CWR)(?:\s+(?:SYN|ACK|FIN|RST|PSH|URG|ECE|CWR))*)(?:\s+[A-Z][A-Z0-9_]*=[^\s]+)*\s*$/i,
+	NETFILTER_KV_GLUE: NETFILTER_KV_GLUE,
 
 	kvHas: function (msg, key) {
 		return new RegExp('(^|[^A-Za-z0-9_])' + key + '=').test(msg);
 	},
 
-	NON_FIREWALL_PREFIX:
-		/^(dnsmasq|procd|ubusd|netifd|odhcpd|logd|dropbear|uhttpd|hostapd|wpad)([^A-Za-z0-9_-]|$)/i,
-	FIREWALL_HINT: /(^|[^A-Za-z0-9_])(fw4|nft|iptables|kernel|firewall)([^A-Za-z0-9_]|$)/i,
-	ACTION_RE: /(^|[^A-Za-z0-9_])(ACCEPT|ALLOW|PASS|DROP|REJECT|DENY|BLOCK)([^A-Za-z0-9_]|$)/i,
-	DENY_ACTION: /(^|[^A-Za-z0-9_])(DROP|REJECT|DENY|BLOCK)([^A-Za-z0-9_]|$)/i,
-	DENY_ACTION_UNDERSCORE: /(?:^|[^A-Za-z0-9])(?:DROP|REJECT|DENY|BLOCK)(?:[^A-Za-z0-9]|$)/i,
+	NON_FIREWALL_PREFIX: NON_FIREWALL_PREFIX,
+	FIREWALL_HINT: FIREWALL_HINT,
+	ACTION_RE: ACTION_RE,
+	DENY_ACTION: DENY_ACTION,
+	DENY_ACTION_UNDERSCORE: DENY_ACTION_UNDERSCORE,
 	MAX_DATE_SECONDS: 8640000000000,
 
 	normalizeNetfilterMessage: function (message) {
-		return (message || '').replace(this.NETFILTER_KV_GLUE, '$1 ');
+		if (typeof message !== 'string') message = '';
+		return message.replace(this.NETFILTER_KV_GLUE, '$1 ');
 	},
 
 	parseKeyValueLog: function (message) {
@@ -288,24 +322,6 @@ return baseclass.extend({
 		return '%s:%s:%s'.format(pad(d.getHours()), pad(d.getMinutes()), pad(d.getSeconds()));
 	},
 
-	formatFlowDisplay: function (row) {
-		const src = row && row.src ? String(row.src) : '';
-		const dst = row && row.dst ? String(row.dst) : '';
-		const sport = row && row.sport ? String(row.sport) : '';
-		const dport = row && row.dport ? String(row.dport) : '';
-		let left = src;
-		let right = dst;
-
-		if (sport) left = left ? left + ':' + sport : ':' + sport;
-		if (dport) right = right ? right + ':' + dport : ':' + dport;
-
-		if (!left && !right) return '—';
-		if (!right) return left;
-		if (!left) return '→ ' + right;
-
-		return left + ' → ' + right;
-	},
-
 	formatCell: function (value) {
 		if (value == null || value === '') return '';
 
@@ -330,11 +346,26 @@ return baseclass.extend({
 
 		return m;
 	},
+
+	filterFieldLabel: function (field) {
+		const labels = {
+			'q': _('Search'),
+			'action': _('Action'),
+			'interface': _('Interface'),
+			'proto': _('Proto'),
+			'src': _('Source'),
+			'dst': _('Destination'),
+			'sport': _('Source port'),
+			'dport': _('Destination port')
+		};
+
+		return labels[field] || field;
+	},
 	/* @fwlive-codegen:luci-preserve-end */
 
 	isFirewallEvent: function (entry) {
-		const msg = this.normalizeNetfilterMessage((entry && entry.msg) || '');
-		if (!msg.trim()) return false;
+		const msg = classifyTrim(this.normalizeNetfilterMessage((entry && entry.msg) || ''));
+		if (!msg) return false;
 
 		if (this.NON_FIREWALL_PREFIX.test(msg)) return false;
 
@@ -459,14 +490,7 @@ return baseclass.extend({
 		const p = this.parseFilterValue(val);
 		if (!p.value) return '';
 
-		if (p.negate) {
-			if (field === 'q' || field === 'src' || field === 'dst')
-				return '%s: not contains %s'.format(field, p.value);
-
-			return '%s: not %s'.format(field, p.value);
-		}
-
-		return '%s: %s'.format(field, val);
+		return _('%s: %s').format(field, val);
 	},
 
 	matchesTextField: function (haystack, spec) {

@@ -2,15 +2,12 @@ local http = require "luci.http"
 
 module("luci.controller.agentflow", package.seeall)
 
-local APPS_PROXY_PREFIX = "/apps=http://127.0.0.1:19290"
-local DEFAULT_BASE_PATH = "/apps/agentflow/"
-local DEFAULT_PORT = 9000
 local AGENTS = {
-	{ id = "codexcli", package = "@openai/codex" },
-	{ id = "claude-code", package = "@anthropic-ai/claude-code" },
-	{ id = "opencode", package = "opencode-ai" },
-	{ id = "kimi", package = "@moonshot-ai/kimi-code" },
-	{ id = "reasonix", package = "reasonix" }
+	{ id = "codexcli", package = "@openai/codex", command = "codex" },
+	{ id = "claude-code", package = "@anthropic-ai/claude-code", command = "claude" },
+	{ id = "opencode", package = "opencode-ai", command = "opencode" },
+	{ id = "kimi", package = "@moonshot-ai/kimi-code", command = "kimi" },
+	{ id = "reasonix", package = "reasonix", command = "reasonix" }
 }
 
 function index()
@@ -20,15 +17,12 @@ function index()
 	open.dependent = false
 	open.sysauth = false
 
-	if not nixio.fs.access("/etc/config/agentflow") then
-		return
-	end
+	if not nixio.fs.access("/etc/config/agentflow") then return end
 
 	local install = entry({"admin", "services", "agentflow", "agent_install"}, call("agentflow_agent_install"))
 	install.leaf = true
 
-	local page = entry({"admin", "services", "agentflow"}, cbi("agentflow"), _("AgentFlow"), 100)
-	page.dependent = true
+	entry({"admin", "services", "agentflow"}, cbi("agentflow"), _("AgentFlow"), 100).dependent = true
 end
 
 local function write_json(obj)
@@ -56,88 +50,13 @@ local function require_post_csrf()
 	return true
 end
 
-local function uhttpd_has_apps_proxy_prefix()
-	local uci = require "luci.model.uci".cursor()
-	local mappings = uci:get_list("uhttpd", "main", "proxy_prefix") or {}
-
-	for _, mapping in ipairs(mappings) do
-		if mapping == APPS_PROXY_PREFIX then
-			return true
-		end
-	end
-	return false
-end
-
-local function uhttpd_supports_proxy_prefix()
-	local sys = require "luci.sys"
-	return sys.call("grep -qr 'proxy_prefix' /etc/init.d/uhttpd /lib/functions /usr/share/uhttpd 2>/dev/null") == 0
-end
-
-local function uhttpd_apps_proxy_available()
-	return uhttpd_supports_proxy_prefix() and uhttpd_has_apps_proxy_prefix()
-end
-
-local function linkeasefull_running()
-	local sys = require "luci.sys"
-	return sys.call("[ -x /etc/init.d/linkeasefull ] && /etc/init.d/linkeasefull running >/dev/null 2>&1") == 0
-end
-
-local function normalized_base_path(path)
-	path = path or DEFAULT_BASE_PATH
-	if path:sub(1, 1) ~= "/" then
-		path = "/" .. path
-	end
-	if path:sub(-1) ~= "/" then
-		path = path .. "/"
-	end
-	return path
-end
-
-local function authority_host(authority)
-	if not authority or authority == "" then
-		return ""
-	end
-	if authority:sub(1, 1) == "[" then
-		return authority:match("^%[([^%]]+)%]") or ""
-	end
-	return authority:match("^([^:]+)") or authority
-end
-
-local function url_authority(host, port)
-	if not host or host == "" then
-		host = "127.0.0.1"
-	end
-	if host:find(":") and host:sub(1, 1) ~= "[" then
-		host = "[" .. host .. "]"
-	end
-	return host .. ":" .. tostring(port)
-end
-
-local function request_or_lan_host()
-	local uci = require "luci.model.uci".cursor()
-	local host = authority_host(http.getenv("HTTP_HOST") or "")
-	if host ~= "" then
-		return host
-	end
-	return uci:get("network", "lan", "ipaddr") or "127.0.0.1"
-end
-
-local function agentflow_config()
-	local uci = require "luci.model.uci".cursor()
-	local port = tonumber(uci:get_first("agentflow", "agentflow", "port")) or DEFAULT_PORT
-	if port < 1 or port > 65535 then
-		port = DEFAULT_PORT
-	end
-	local base_path = normalized_base_path(uci:get_first("agentflow", "agentflow", "base_path"))
-	return port, base_path
-end
-
-local function agentflow_entry_url()
-	local port, base_path = agentflow_config()
-	if linkeasefull_running() and uhttpd_apps_proxy_available() then
-		return base_path
-	end
-	return "http://" .. url_authority(request_or_lan_host(), port) .. base_path
+local function compat()
+	local dispatcher = require "luci.dispatcher"
+	return require("luci.model.linkease.apps_compat").new({
+		http = http,
+		resolver = require("luci.model.linkease.apps_openwrt").new(),
+		auth_url = dispatcher.build_url("admin", "services", "linkease_auth", "auth")
+	})
 end
 
 local function node_modules_root()
@@ -160,10 +79,58 @@ local function node_modules_root()
 	return root
 end
 
+local function agent_commands_ready()
+	local sys = require "luci.sys"
+	local script = {
+		'. /lib/functions/mise.sh 2>/dev/null || exit 1',
+		'istore_runtime_env >/dev/null 2>&1 || exit 1',
+		'probe_prefix="/tmp/agentflow-agent-probe.$$"',
+		'cleanup_agentflow_probe() { rm -f "$probe_prefix".*; }',
+		'trap cleanup_agentflow_probe 0 HUP INT TERM',
+		'check_agent_version() {',
+		'\tshim="$1"',
+		'\toutput="$2"',
+		'\t"$shim" --version >"$output" 2>/dev/null &',
+		'\tchild_pid=$!',
+		'\t(',
+		'\t\ttimer_pid=""',
+		'\t\tstop_timer() {',
+		'\t\t\t[ -z "$timer_pid" ] || kill "$timer_pid" 2>/dev/null',
+		'\t\t\texit 0',
+		'\t\t}',
+		'\t\ttrap stop_timer TERM INT',
+		'\t\tsleep 5 &',
+		'\t\ttimer_pid=$!',
+		'\t\twait "$timer_pid" 2>/dev/null || exit 0',
+		'\t\tkill "$child_pid" 2>/dev/null',
+		'\t) &',
+		'\twatchdog_pid=$!',
+		'\twait "$child_pid"',
+		'\trc=$?',
+		'\tkill "$watchdog_pid" 2>/dev/null',
+		'\twait "$watchdog_pid" 2>/dev/null',
+		'\t[ "$rc" -eq 0 ] && [ -s "$output" ]',
+		'}'
+	}
+
+	for _, agent in ipairs(AGENTS) do
+		script[#script + 1] = 'shim="$HOME/.local/share/mise/shims/' .. agent.command .. '"'
+		script[#script + 1] = 'if [ -x "$shim" ] && check_agent_version "$shim" "$probe_prefix.' .. agent.id .. '"; then printf "ready:%s\\n" "' .. agent.id .. '"; fi'
+	end
+
+	local output = sys.exec(table.concat(script, "\n")) or ""
+	local ready = {}
+	for id in output:gmatch("ready:([%w%-]+)") do
+		ready[id] = true
+	end
+	return ready
+end
+
 local function agent_statuses()
 	local fs = require "nixio.fs"
 	local jsonc = require "luci.jsonc"
 	local root = node_modules_root()
+	local command_ready = root and agent_commands_ready() or {}
 	local statuses = {}
 
 	for _, agent in ipairs(AGENTS) do
@@ -172,7 +139,10 @@ local function agent_statuses()
 			local package_file = root .. "/" .. agent.package .. "/package.json"
 			local package_data = fs.readfile(package_file)
 			local package_json = package_data and jsonc.parse(package_data) or nil
-			if type(package_json) == "table" then
+			local package_valid = type(package_json) == "table"
+				and type(package_json.version) == "string"
+				and package_json.version ~= ""
+			if package_valid and command_ready[agent.id] == true then
 				status.installed = true
 				status.version = package_json.version
 			end
@@ -185,22 +155,15 @@ end
 
 function agentflow_status()
 	local sys = require "luci.sys"
-	local port, base_path = agentflow_config()
-	local entry_url = agentflow_entry_url()
+	local uci = require "luci.model.uci".cursor()
 	local agents, agents_available = agent_statuses()
-
-	local status = {
-		running = (sys.call("pidof agentflow >/dev/null") == 0),
-		port = port,
-		base_path = base_path,
-		entry_url = entry_url,
-		proxy_prefix_supported = uhttpd_supports_proxy_prefix(),
-		proxy_prefix_enabled = uhttpd_apps_proxy_available(),
-		linkeasefull_running = linkeasefull_running(),
+	compat():legacy_status("agentflow", {
+		running = sys.call("pidof agentflow >/dev/null") == 0,
+		port = uci:get_first("agentflow", "agentflow", "port") or "9000",
+		base_path = uci:get_first("agentflow", "agentflow", "base_path") or "/apps/agentflow/",
 		agents_available = agents_available,
 		agents = agents
-	}
-	write_json(status)
+	})
 end
 
 function agentflow_agent_install()
@@ -291,6 +254,5 @@ function agentflow_agent_install()
 end
 
 function agentflow_open()
-	local entry_url = agentflow_entry_url()
-	http.redirect(entry_url)
+	compat():open("agentflow")
 end

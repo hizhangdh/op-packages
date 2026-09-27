@@ -9,7 +9,7 @@
  *
  * renderToolbar(host, state, callbacks) → void
  *   host      - #fwlive-logging-bar strip slot (cleared and rebuilt; element kept)
- *   state     - { loggingStatus, loggingBusy, entriesLength, loggingNotice }
+ *   state     - { loggingStatus, loggingBusy, loggingNotice }
  *   callbacks - { onEnable(), onDisable() }
  *
  * G Hybrid chrome: when WAN logging is on, one merged control carries status +
@@ -17,7 +17,7 @@
  *
  * renderManualTestNodes(host, state, callbacks) → void
  *   host      - <ul> element inside #fwlive-help (cleared and rebuilt)
- *   state     - unused; nft-only instruction
+ *   state     - unused; instruction is nft-only (rpcd never emits iptables)
  *
  * Empty-state helpers:
  *   buildEmptyStateNodes(state, callbacks) → Node[]
@@ -69,6 +69,7 @@ function blockerCode(state) {
 		blockers.indexOf('nf_log_ipv6_missing') >= 0
 	)
 		return 'nf_log_missing';
+	if (blockers.length > 0) return 'unknown';
 	return '';
 }
 
@@ -92,6 +93,63 @@ function appendLoggingNotice(host, state) {
 	host.appendChild(E('span', { 'class': 'fwlive-logging-notice' }, [state.loggingNotice]));
 }
 
+function appendBlockerStatus(host, blocker, st) {
+	if (blocker === 'no_wan_zone') {
+		host.appendChild(
+			E(
+				'span',
+				{ 'class': 'fwlive-logging-status' },
+				labelWithZoneCandidates(_('WAN logging unavailable: no WAN zone'), st)
+			)
+		);
+		host.appendChild(links.firewallZonesLink());
+		return;
+	}
+
+	if (blocker === 'nf_log_missing') {
+		host.appendChild(
+			E('span', { 'class': 'fwlive-logging-status' }, [
+				_('WAN logging unavailable: missing kernel log modules')
+			])
+		);
+		return;
+	}
+
+	if (blocker === 'unknown') {
+		host.appendChild(
+			E('span', { 'class': 'fwlive-logging-status' }, [_('WAN logging unavailable')])
+		);
+	}
+}
+
+function appendWanLogDisableControl(host, state, callbacks) {
+	const st = state.loggingStatus;
+	const limit = st.wan_log_limit || _('default 10/minute');
+	const busy = !!state.loggingBusy;
+	const children = busy
+		? [_('Disabling…')]
+		: [
+				E('span', { 'class': 'fwlive-log-on-dot', 'aria-hidden': 'true' }, ['']),
+				E('span', { 'class': 'fwlive-log-label' }, [_('WAN logging on')]),
+				E('span', { 'class': 'fwlive-log-rate' }, [_('· %s').format(limit)])
+			];
+	host.appendChild(
+		E(
+			'button',
+			{
+				'class': 'cbi-button fwlive-log-merged',
+				'type': 'button',
+				'title': _('WAN logging on (%s). Click to disable.').format(limit),
+				'disabled': busy ? '' : null,
+				'click': function () {
+					callbacks.onDisable();
+				}
+			},
+			children
+		)
+	);
+}
+
 function renderToolbar(host, state, callbacks) {
 	host.innerHTML = '';
 	const st = state.loggingStatus;
@@ -103,54 +161,15 @@ function renderToolbar(host, state, callbacks) {
 	host.style.display = 'contents';
 	const blocker = blockerCode(state);
 
-	if (blocker === 'no_wan_zone') {
-		host.appendChild(
-			E(
-				'span',
-				{ 'class': 'fwlive-logging-status' },
-				labelWithZoneCandidates(_('WAN logging unavailable: no WAN zone'), st)
-			)
-		);
-		host.appendChild(links.firewallZonesLink());
-		appendLoggingNotice(host, state);
-		return;
-	}
+	if (blocker) appendBlockerStatus(host, blocker, st);
 
-	if (blocker === 'nf_log_missing') {
-		host.appendChild(
-			E('span', { 'class': 'fwlive-logging-status' }, [
-				_('WAN logging unavailable: missing kernel log modules')
-			])
-		);
-		appendLoggingNotice(host, state);
-		return;
-	}
-
-	const limit = st.wan_log_limit || _('default 10/minute');
 	if (st.wan_log) {
-		const busy = !!state.loggingBusy;
-		const children = busy
-			? [_('Disabling…')]
-			: [
-					E('span', { 'class': 'fwlive-log-on-dot', 'aria-hidden': 'true' }, ['']),
-					E('span', { 'class': 'fwlive-log-label' }, [_('WAN logging on')]),
-					E('span', { 'class': 'fwlive-log-rate' }, [_('· %s').format(limit)])
-				];
-		host.appendChild(
-			E(
-				'button',
-				{
-					'class': 'cbi-button fwlive-log-merged',
-					'type': 'button',
-					'title': _('WAN logging on (%s). Click to disable.').format(limit),
-					'disabled': busy ? '' : null,
-					'click': function () {
-						callbacks.onDisable();
-					}
-				},
-				children
-			)
-		);
+		appendWanLogDisableControl(host, state, callbacks);
+		appendLoggingNotice(host, state);
+		return;
+	}
+
+	if (blocker) {
 		appendLoggingNotice(host, state);
 		return;
 	}
@@ -181,17 +200,17 @@ function buildConsentPanel(state, callbacks) {
 			E('li', {}, [
 				E('strong', {}, [_('Changes:')]),
 				' ',
-				_('sets log on the WAN firewall zone and reloads the firewall.')
+				_('Turns on logging for the WAN firewall zone and reloads the firewall.')
 			]),
 			E('li', {}, [
 				E('strong', {}, [_('Does not change:')]),
 				' ',
-				_('allow/deny rules, LAN logging, or anything else.')
+				_('Allow/deny rules, LAN logging, or anything else.')
 			]),
 			E('li', {}, [
 				E('strong', {}, [_('Undo:')]),
 				' ',
-				_('turn it back off with the WAN logging on control on the watch strip.')
+				_('Turn it back off with the WAN logging control on the watch strip.')
 			])
 		]),
 		E('p', { 'class': 'fwlive-consent-check' }, [
@@ -243,6 +262,8 @@ function buildEmptyStateNodes(state, callbacks) {
 		);
 	}
 
+	if (!st) return nodes;
+
 	if (blocker === 'no_wan_zone') {
 		nodes.push(
 			E(
@@ -253,7 +274,8 @@ function buildEmptyStateNodes(state, callbacks) {
 		);
 		nodes.push(
 			E('p', {}, [
-				_('No WAN firewall zone found in /etc/config/firewall. Configure zones under '),
+				_('No WAN firewall zone found in /etc/config/firewall. Configure zones under:'),
+				' ',
 				links.firewallZonesLink()
 			])
 		);
@@ -272,6 +294,16 @@ function buildEmptyStateNodes(state, callbacks) {
 		nodes.push(
 			E('p', {}, [
 				E('code', {}, ['opkg update && opkg install kmod-nf-log-ipv4 kmod-nf-log-ipv6'])
+			])
+		);
+		return nodes;
+	}
+
+	if (blocker === 'unknown') {
+		nodes.push(E('p', { 'class': 'fwlive-empty-title' }, [_('WAN logging unavailable')]));
+		nodes.push(
+			E('p', {}, [
+				_('This router reported a logging blocker that Live View does not recognize yet.')
 			])
 		);
 		return nodes;
@@ -339,19 +371,21 @@ function renderEmptyState(host, state, callbacks) {
 }
 
 /**
- * renderManualTestNodes — fills a <li> host element with the nft manual test
+ * renderManualTestNodes — fills a <li> host element with the firewall manual test
  * instruction. Call from addFooter() after render() has inserted
  * the placeholder <li id="fwlive-manual-test">.
  */
 function renderManualTestNodes(host, _state, _callbacks) {
 	host.innerHTML = '';
-	host.appendChild(document.createTextNode(_('Manual test (System → Terminal): ')));
+	host.appendChild(document.createTextNode(_('Manual test (System → Terminal):')));
+	host.appendChild(document.createTextNode(' '));
 	host.appendChild(
 		E('code', {}, [
 			'nft insert rule inet fw4 input ip protocol icmp icmp type echo-request log prefix "fwlive-ping " accept'
 		])
 	);
-	host.appendChild(document.createTextNode(_(' then ping the router.')));
+	host.appendChild(document.createTextNode(' '));
+	host.appendChild(document.createTextNode(_('Then ping the router.')));
 }
 
 return baseclass.extend({

@@ -24,21 +24,34 @@ RESOLVE_MAX=32
 # Per-lookup nslookup timeout (integer seconds — BusyBox `timeout` truncates
 # fractional values to 0 on OpenWrt 23.05/1.36, so 0.5 would silently
 # degrade to no timeout; luna fold 2026-08-10). The wall-clock budget
-# below is the real whole-call bound; this per-lookup cap only prevents a
-# single hung resolver from dominating the budget. LAN/local-resolver
-# lookups are single-digit ms, so 1s is ample. Passed as argv to
-# `timeout`, never interpolated into a shell string.
+# below stops starting work after the budget; this per-lookup cap plus the
+# shared TERM/KILL grace bounds the last in-progress lookup. LAN/local-resolver
+# lookups are single-digit ms, so 1s is ample. Passed as argv to `timeout`,
+# never interpolated into a shell string.
 RESOLVE_TIMEOUT=1
 # Wall-clock budget (seconds) for a single ubus fwlive.resolve call. The
 # lookup loop checks elapsed time and aborts cleanly once this budget is
 # spent, so a flood of unresolvable IPs cannot hold an rpcd worker for the
 # full RESOLVE_MAX * RESOLVE_TIMEOUT worst case. Worst case total time is
-# budget + one in-progress lookup (<= RESOLVE_TIMEOUT), i.e. ~6s.
+# budget + one in-progress lookup (RESOLVE_TIMEOUT + TIMEOUT_KILL_GRACE),
+# plus scheduling/IPC overhead: approximately 7s before scheduler/IPC delay.
+# Elapsed time comes from /proc/uptime centiseconds so an NTP step cannot
+# stretch the budget; RESOLVE_MAX still bounds the work if uptime is unreadable.
 RESOLVE_BUDGET=5
 # Cap raw logd lines per poll (~2000 ≈ typical logd ring / ~200 KB JSON before filter).
 POLL_LINES_MAX=2000
 # Bound nft ruleset dumps (corrupted/hung nft must not block LuCI rules load).
 NFT_TIMEOUT=5
+# Bound poll log.read (wedged logd must not hold an rpcd worker past the UI cadence).
+# Integer seconds — BusyBox timeout truncates fractions to 0 (see RESOLVE_TIMEOUT).
+POLL_TIMEOUT=5
+# Outer GNU timeout hard-kills the command group after the inner command's
+# duration plus this TERM grace. The package dependency ensures GNU's
+# --foreground and signal options are available, including when BusyBox also
+# has a timeout applet.
+TIMEOUT_KILL_GRACE=1
+# Host tests override this to a pinned libubox helper; devices keep the package path.
+: "${FWLIVE_JSHN_SH:=/usr/share/libubox/jshn.sh}"
 
 # json_escape lives in fwlive-logging.sh so prerm can source that file alone.
 # shellcheck disable=SC1090,SC1091 # LOGGING_SH resolves to sibling ../fwlive-logging.sh
@@ -47,7 +60,7 @@ NFT_TIMEOUT=5
 . "$ADAPTIVE_SH"
 
 slug_key() {
-	echo "$1" | tr '[:upper:]' '[:lower:]' | tr ' _' '--'
+	printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]' | tr ' _' '--'
 }
 
 # Cap rules JSON size so a huge ruleset cannot unbound an rpcd reply.
@@ -100,9 +113,16 @@ uci_rule_names() {
 }
 
 is_uci_style_name() {
+	# Domain: non-empty UCI-style identifier, every character in
+	# [A-Za-z0-9_-]. That is the map-key set this helper admits
+	# (names parseRuleHint can look up). nft comments can print
+	# anything; skip names outside this set so they do not become
+	# dead map keys. parseRuleHint also allows '.' — not accepted
+	# here. The charset glob is *[!class]* (whole string);
+	# [!class]* only tested the first character.
 	case "$1" in
-		*' '*|*'"'*|*"'"*) return 1 ;;
-		[!A-Za-z0-9_-]*) return 1 ;;
+		''|*' '*|*'"'*|*"'"*) return 1 ;;
+		*[!A-Za-z0-9_-]*) return 1 ;;
 	esac
 	return 0
 }
@@ -131,7 +151,7 @@ map_prefix_with_label() {
 			map_add "$slug" "$label"
 		fi
 	else
-		cosmetic=$(echo "$prefix" | tr '-' ' ')
+		cosmetic=$(printf '%s\n' "$prefix" | tr '-' ' ')
 		map_add "$prefix" "$cosmetic"
 		if [ "$slug" != "$prefix" ]; then
 			map_add "$slug" "$cosmetic"
@@ -142,10 +162,61 @@ map_prefix_with_label() {
 run_with_timeout() {
 	secs="$1"
 	shift
-	if command -v timeout >/dev/null 2>&1; then
-		timeout "$secs" "$@" 2>/dev/null
+	if fwlive_timeout_available; then
+		run_timeout_busybox="$(command -v busybox 2>/dev/null)" || return 127
+		run_timeout_cat="$(command -v cat 2>/dev/null)" || return 127
+		[ -n "$run_timeout_busybox" ] && [ -n "$run_timeout_cat" ] || return 127
+		# The inner foreground timeout sends TERM to the direct command at its
+		# deadline. Keep a pipe reader alive until every inherited stdout fd
+		# closes; the outer timeout then KILLs the whole process group at the
+		# hard deadline. After the pipeline ends, keep this wrapper alive while
+		# any other live process remains in its dedicated process group. setsid keeps
+		# unrelated rpcd processes out of that scan and lets the outer timeout
+		# kill children even when they close stdout. BusyBox ash pipefail
+		# preserves the inner timeout status; invoking it explicitly keeps this
+		# portable from host dash too.
+		"$run_timeout_busybox" setsid "$FWLIVE_TIMEOUT_BIN" -s KILL "$((secs + TIMEOUT_KILL_GRACE))" \
+			"$run_timeout_busybox" sh -c '
+				set -o pipefail || exit 125
+				timeout_bin="$1"
+				duration="$2"
+				cat_bin="$3"
+				busybox_bin="$4"
+				shift 4
+				"$timeout_bin" --foreground "$duration" "$@" | "$cat_bin"
+				status="$?"
+				IFS= read -r proc_fields < "/proc/$$/stat" || exit 125
+				proc_fields="${proc_fields##*) }"
+				proc_fields="${proc_fields#* }"
+				proc_fields="${proc_fields#* }"
+				group="${proc_fields%% *}"
+				while :; do
+					peer=0
+					for proc_stat in /proc/[0-9]*/stat; do
+						[ -r "$proc_stat" ] || continue
+						IFS= read -r proc_fields < "$proc_stat" || continue
+						proc_fields="${proc_fields##*) }"
+						proc_state="${proc_fields%% *}"
+						proc_fields="${proc_fields#* }"
+						proc_fields="${proc_fields#* }"
+						proc_group="${proc_fields%% *}"
+						proc_pid="${proc_stat#/proc/}"
+						proc_pid="${proc_pid%/stat}"
+						if [ "$proc_group" = "$group" ] && \
+							[ "$proc_pid" != "$group" ] && [ "$proc_pid" != "$$" ] && \
+							[ "$proc_state" != Z ]; then
+							peer=1
+							break
+						fi
+					done
+					[ "$peer" = 1 ] || break
+					"$busybox_bin" sleep 0.1
+				done
+				exit "$status"
+			' fwlive-timeout "$FWLIVE_TIMEOUT_BIN" "$secs" \
+			"$run_timeout_cat" "$run_timeout_busybox" "$@" 2>/dev/null
 	else
-		# Fail closed: never run unbounded when timeout is absent.
+		# Fail closed: never run unbounded without the GNU provider.
 		return 127
 	fi
 }
@@ -170,15 +241,119 @@ $(uci_rule_names)
 EOF
 }
 
+# One awk pass: prefix<TAB>comment. Last quoted log prefix / comment on
+# the line, including \" units (same capture as the former sed).
+# Raw tabs in prefix/comment become the two-character sequence \t so the
+# separator tab is unique. Backslashes are not re-encoded.
+nft_dump_fields() {
+	LC_ALL=C awk '
+	function last_at(s, needle,    p, i, found) {
+		found = 0
+		p = 1
+		while ((i = index(substr(s, p), needle)) > 0) {
+			found = p + i - 1
+			p = found + 1
+		}
+		return found
+	}
+	function quoted_at(s, needle,    i, rest, out, c, n, esc, j) {
+		i = last_at(s, needle)
+		if (i == 0)
+			return ""
+		rest = substr(s, i + length(needle))
+		n = length(rest)
+		out = ""
+		esc = 0
+		for (j = 1; j <= n; j++) {
+			c = substr(rest, j, 1)
+			if (esc) {
+				out = out c
+				esc = 0
+				continue
+			}
+			if (c == "\\") {
+				out = out c
+				esc = 1
+				continue
+			}
+			if (c == "\"")
+				return out
+			out = out c
+		}
+		return ""
+	}
+	{
+		prefix = quoted_at($0, "log prefix \"")
+		comment = quoted_at($0, "comment \"")
+		if (prefix == "" && comment == "")
+			next
+		gsub(/\\/, "\\\\", prefix)
+		gsub(/\t/, "\\t", prefix)
+		gsub(/\\/, "\\\\", comment)
+		gsub(/\t/, "\\t", comment)
+		print prefix "\t" comment
+	}
+	' || return 1
+}
+
+# Restore nft_dump_fields TSV encoding. Walk left to right: \\ is a
+# literal backslash, \t is a tab. Other backslash pairs stay as written.
+# Do not put backslash sequences in case patterns (they are escapes).
+# Fast-path strings with no backslash: dash ${var#?} walks are O(n^2) and
+# the map byte-cap tests feed ~60k prefixes with none.
+# Result is _tsv_out (no fork).
+_nft_tsv_unescape() {
+	case "$1" in
+		*\\*) ;;
+		*)
+			_tsv_out="$1"
+			return 0
+			;;
+	esac
+	_tab=$(printf '\t')
+	_in="$1"
+	_out=
+	while [ -n "$_in" ]; do
+		_head=${_in%"${_in#?}"}
+		_in=${_in#?}
+		if [ "$_head" = "\\" ]; then
+			_n=${_in%"${_in#?}"}
+			_in=${_in#?}
+			if [ "$_n" = t ]; then
+				_out="${_out}${_tab}"
+			elif [ "$_n" = "\\" ]; then
+				_out="${_out}\\"
+			else
+				_out="${_out}\\${_n}"
+			fi
+		else
+			_out="${_out}${_head}"
+		fi
+	done
+	_tsv_out="$_out"
+}
+
 # pass=labeled|unlabeled|all — labeled before unlabeled so !fw4: beats
 # an earlier cosmetic for the same prefix under first-wins.
+# Reads TSV from nft_dump_fields; stops once the map cap trips.
 map_from_nft_stream() {
 	pass="${1:-all}"
-	while IFS= read -r line; do
-		# Capture [^"]* plus escaped-quote units (\"...) so a log prefix or
-		# comment containing an escaped quote is not truncated at the quote.
-		prefix=$(echo "$line" | sed -n 's/.*log prefix "\([^"\\]*\(\\.[^"\\]*\)*\)".*/\1/p')
-		comment=$(echo "$line" | sed -n 's/.*comment "\([^"\\]*\(\\.[^"\\]*\)*\)".*/\1/p')
+	_tab=$(printf '\t')
+	_esc_t=$(printf '\\t')
+	_esc_b=$(printf '\\\\')
+	# IFS= keeps a leading tab (empty prefix + comment-only !fw4: line).
+	while IFS= read -r line || [ -n "$line" ]; do
+		[ -n "$_map_overflow" ] && break
+		[ -n "$line" ] || continue
+		prefix="${line%%${_tab}*}"
+		case "$line" in
+			*"$_tab"*) comment="${line#*"$_tab"}" ;;
+			*) comment="" ;;
+		esac
+		_nft_tsv_unescape "$prefix"
+		prefix="$_tsv_out"
+		_nft_tsv_unescape "$comment"
+		comment="$_tsv_out"
 		label=''
 
 		case "$comment" in
@@ -207,14 +382,6 @@ map_from_nft_stream() {
 
 nft_list_ruleset() {
 	run_with_timeout "$NFT_TIMEOUT" nft list ruleset
-}
-
-detect_firewall_backend() {
-	if command -v nft >/dev/null 2>&1 && nft_list_ruleset >/dev/null; then
-		printf '%s' nft
-		return 0
-	fi
-	printf '%s' unknown
 }
 
 _fwlive_tmp_dir_ok() {
@@ -251,15 +418,33 @@ enrich_rules_dump() {
 
 	_rules_dump=$(_fwlive_mktemp "$_dump_prefix") || _rules_dump=''
 	if [ -n "$_rules_dump" ]; then
+		# One dump serves detect + parse. Empty/failed dump is not nft
+		# (unknown/no_backend, same as a failed detect probe).
 		if nft_list_ruleset >"$_rules_dump" 2>/dev/null; then
-			map_from_nft_stream labeled <"$_rules_dump"
-			map_from_nft_stream unlabeled <"$_rules_dump"
-		elif [ -z "$_enrich_error" ]; then
-			_enrich_error='nft_failed'
+			backend=nft
+			# Stream awk output to a second temp so a huge dump is
+			# not materialized in the rpcd worker's shell heap.
+			_nft_tsv=$(_fwlive_mktemp "fwlive-nft-tsv")
+			if [ -z "$_nft_tsv" ]; then
+				_enrich_error='mktemp_failed'
+			else
+				# awk under set -eu must not abort the plugin before JSON.
+				if nft_dump_fields <"$_rules_dump" >"$_nft_tsv"; then
+					map_from_nft_stream labeled <"$_nft_tsv"
+					if [ -z "$_map_overflow" ]; then
+						map_from_nft_stream unlabeled <"$_nft_tsv"
+					fi
+				else
+					_enrich_error='tsv_failed'
+				fi
+				rm -f "$_nft_tsv"
+			fi
 		fi
 		rm -f "$_rules_dump"
 	else
+		# nft is on PATH (caller checked); skip enrichment without a dump.
 		_enrich_error='mktemp_failed'
+		backend=nft
 	fi
 }
 
@@ -268,14 +453,19 @@ build_rules_map() {
 	_map_keys=0
 	_map_overflow=''
 	_enrich_error=''
-	backend=$(detect_firewall_backend)
+	backend=unknown
 
 	# UCI first, then labeled stream prefixes, then unlabeled cosmetics
 	# First-wins keeps UCI over nft and !fw4: over cosmetic.
 	map_uci_rule_names
 
-	if [ "$backend" = nft ]; then
-		enrich_rules_dump fwlive-nft
+	# Temp file first, then a single nft_list_ruleset; backend from success.
+	if command -v nft >/dev/null 2>&1; then
+		if fwlive_timeout_available; then
+			enrich_rules_dump fwlive-nft
+		else
+			_enrich_error='timeout_missing'
+		fi
 	fi
 
 	if [ "$backend" = unknown ] && [ -z "$_enrich_error" ]; then
@@ -301,7 +491,8 @@ poll_clamp_lines() {
 			return 0
 			;;
 	esac
-	_digits=$(printf '%s' "$_val" | sed 's/^0*//')
+	# Strip leading zeros in-shell so default-50 poll does not pay for sed.
+	_digits=${_val#${_val%%[!0]*}}
 	if [ -z "$_digits" ]; then
 		printf '%s' "50"
 		return 0
@@ -317,33 +508,52 @@ poll_clamp_lines() {
 	fi
 }
 
+# Failed jshn reads still default to 50 (silent numeric contract; syslog named cause only).
 poll_lines_from_input() {
 	input="$1"
 	lines=50
+	_cause=
 
 	if ! command -v jshn >/dev/null 2>&1; then
-		printf '%s' "$lines"
-		return 0
+		_cause=jshn_missing
+	else
+		_rc=0
+		# jshn uses intentionally unset state variables. Keep nounset disabled in
+		# this subshell so strict mode is restored automatically on every exit.
+		# exit 2: library missing or source failed; exit 1: JSON parse failed.
+		# Missing addresses[0] is an intentional silent default, not a parse error.
+		_first=$( (
+			set +u
+			# shellcheck disable=SC1090,SC1091
+			. "${FWLIVE_JSHN_SH:-/usr/share/libubox/jshn.sh}" 2>/dev/null || exit 2
+			json_init >/dev/null 2>&1 || exit 2
+			# json_load masks a failing jshn exit through eval. Check the real
+			# parser once, then evaluate only its generated shell assignments.
+			_json_no_warning=1
+			_json_code=$(jshn -r "$input" 2>/dev/null) || exit 1
+			eval "$_json_code" || exit 1
+			first=
+			if json_select addresses 2>/dev/null; then
+				json_get_var first 1 || first=
+			fi
+			printf '%s' "${first:-}"
+		) ) || _rc=$?
+		if [ "$_rc" -eq 2 ]; then
+			_cause=jshn_lib_missing
+		elif [ "$_rc" -ne 0 ]; then
+			_cause=invalid_input
+		else
+			case "${_first:-}" in
+				''|*[!0-9]*) ;;
+				*) lines="$_first" ;;
+			esac
+		fi
 	fi
 
-	# jshn uses intentionally unset state variables. Keep nounset disabled in
-	# this subshell so strict mode is restored automatically on every exit.
-	_first=$( (
-		set +u
-		. /usr/share/libubox/jshn.sh
-		# json_load masks a failing jshn exit through eval. Check the real
-		# parser once, then evaluate only its generated shell assignments.
-		_json_no_warning=1
-		_json_code=$(jshn -r "$input" 2>/dev/null) || exit 1
-		eval "$_json_code" || exit 1
-		if ! json_select addresses 2>/dev/null; then exit 1; fi
-		json_get_var first 1 || exit 1
-		printf '%s' "${first:-}"
-	) ) || _first=
-	case "${_first:-}" in
-		''|*[!0-9]*) ;;
-		*) lines="$_first" ;;
-	esac
+	# Named cause goes to syslog only: poll JSON "error" is connection-lost in the view.
+	if [ -n "$_cause" ]; then
+		logger -t fwlive "$_cause" 2>/dev/null || true
+	fi
 
 	lines=$(poll_clamp_lines "$lines")
 
@@ -360,7 +570,7 @@ fetch_firewall_logs() {
 	# Adaptive plan prints: lines shed bucket
 	start_cs=$(fwlive_adaptive_clock_cs)
 	# Drop dead oneshot flag — only consumed on logd's stream branch.
-	if ! raw=$(ubus call log read "{\"lines\":$lines,\"stream\":false}" 2>/dev/null); then
+	if ! raw=$(run_with_timeout "$POLL_TIMEOUT" ubus call log read "{\"lines\":$lines,\"stream\":false}"); then
 		# Do not record ~0 ms as cold: failure is not healthy fast processing
 		# and must not clear an existing hot/shed cap.
 		out='{"log":[],"error":"log_read_failed"}'
@@ -379,15 +589,24 @@ fetch_firewall_logs() {
 	export FWLIVE_SUMMARY
 
 	# Do not swallow a filter failure into a silent empty table.
-	# If the filter exits non-zero but still printed JSON, keep it.
+	# A killed classifier can leave a truncated body that still ends in `}`.
+	# Keep a non-zero body only when it is one of the complete error
+	# objects the shipped filter prints; otherwise emit filter_failed.
 	# Empty success is not valid poll JSON — the shipped filter always
 	# prints {"log":[...]}, but a stub/regression must not emit a blank body.
 	_filter_ok=1
-	if ! out=$(printf '%s' "$raw" | "$FILTER_SH" /tmp); then
+	if ! out=$(printf '%s' "$raw" | run_with_timeout "$POLL_TIMEOUT" "$FILTER_SH" /tmp); then
 		_filter_ok=0
-		if [ -z "$out" ]; then
-			out='{"log":[],"error":"filter_failed"}'
-		fi
+		case "$out" in
+			'{"log":[],"error":"filter_failed"}'|\
+			'{"log":[],"error":"jsonfilter_missing"}'|\
+			'{"log":[],"error":"classifier_missing"}'|\
+			'{"log":[],"error":"filter_tempfile_failed"}')
+				;;
+			*)
+				out='{"log":[],"error":"filter_failed"}'
+				;;
+		esac
 	fi
 	if [ -z "$out" ]; then
 		_filter_ok=0
@@ -398,6 +617,12 @@ fetch_firewall_logs() {
 	# not let it overwrite a prior hot state as a healthy fast sample.
 	case "$out" in
 		*'"error":'*) _filter_ok=0 ;;
+	esac
+	# Zero-exit JSON without a numeric messages_received is not a healthy
+	# sample. The merge fallback of 0 must not clear hot/shed.
+	case "$out" in
+		*'"messages_received":'[0-9]*) ;;
+		*) _filter_ok=0 ;;
 	esac
 	end_cs=$(fwlive_adaptive_clock_cs)
 	# Uptime wrap / skew: end < start — do not record as cold.
@@ -414,6 +639,10 @@ fetch_firewall_logs() {
 }
 
 poll_logs() {
+	if ! fwlive_timeout_available; then
+		printf '{"log":[],"error":"timeout_missing"}'
+		return 0
+	fi
 	# Optional JSON on $1 (rpcd may also pass argv $3 at the call site); else stdin.
 	input=$(read_rpc_input "$1")
 	fetch_firewall_logs "$input"
@@ -423,16 +652,29 @@ poll_logs() {
 # "<ptr> name = <host>"; fall back to "Address N: <ip> <host>".
 # Trailing dots are stripped. Empty / server-only output is not a name.
 parse_nslookup_name() {
-	# Prefer "<ptr> name = <host>". The "Address N: ip host" fallback
-	# must ignore the Server block (BusyBox mini nslookup prints the
-	# resolver via the same Address N: format first). Only accept
-	# Address N: after a blank line (the answer section).
+	# Prefer "<ptr> name = <host>". "name =" must be a whole token
+	# (not a suffix of hostname, not the phrase "domain name =").
+	# The "Address N: ip host" fallback must ignore the Server
+	# block (BusyBox mini nslookup prints the resolver via the
+	# same Address N: format first). Only accept Address N: after
+	# a blank line (the answer section).
 	printf '%s\n' "$1" | awk '
-		tolower($0) ~ /name[ \t]*=/ {
-			sub(/.*[Nn][Aa][Mm][Ee][ \t]*=[ \t]*/, "")
-			gsub(/[ \t].*$/, "")
-			gsub(/\.$/, "")
-			if ($0 != "") { print; exit }
+		{
+			low = tolower($0)
+			host = ""
+			if (match(low, /^name[ \t]*=[ \t]*/)) {
+				host = substr($0, RLENGTH + 1)
+			} else if (match(low, /[^a-z0-9_]name[ \t]*=[ \t]*/)) {
+				pre = substr(low, 1, RSTART - 1)
+				sub(/[ \t]+$/, "", pre)
+				if (pre != "domain" && pre !~ /[^a-z0-9_]domain$/)
+					host = substr($0, RSTART + RLENGTH)
+			}
+			if (host != "") {
+				gsub(/[ \t].*$/, "", host)
+				gsub(/\.$/, "", host)
+				if (host != "") { print host; exit }
+			}
 		}
 		NF == 0 { in_answer = 1; next }
 		in_answer && $1 == "Address" && $2 ~ /^[0-9]+:/ && NF >= 4 {
@@ -549,6 +791,11 @@ resolve_addresses() {
 		printf '{"names":{},"error":"no_resolver"}'
 		return 0
 	fi
+	# Do not turn a missing timeout provider into a negative PTR cache entry.
+	if ! fwlive_timeout_available; then
+		printf '{"names":{},"error":"timeout_missing"}'
+		return 0
+	fi
 
 	# Load shed: previous poll was hot.
 	if fwlive_adaptive_is_hot; then
@@ -556,14 +803,13 @@ resolve_addresses() {
 		return 0
 	fi
 
-	# Wall-clock budget clock starts at the TRUE function entry: the budget
-	# must bound the whole call — including read_rpc_input (stalled stdin
-	# must not escape the budget) and json parsing. `date +%s` can jump
-	# under NTP sync — accepted (worst case the budget over- or under-runs
-	# by the jump; worker starvation is still prevented).
-	start=$(date +%s)
 	# Optional JSON on $1 (rpcd may also pass argv $3 at the call site); else stdin.
 	input=$(read_rpc_input "$1")
+	# Wall-clock budget starts after the input read and bounds the lookup
+	# loop only. Stalled stdin is not interrupted — production rpcd closes
+	# a finite payload. /proc/uptime centiseconds are monotonic across an
+	# NTP step; if the clock helper prints 0, RESOLVE_MAX still bounds work.
+	start=$(fwlive_adaptive_clock_cs)
 	lookups=0
 	truncated=0
 	OUT=''
@@ -575,7 +821,8 @@ resolve_addresses() {
 
 	_addresses=$( (
 		set +u
-		. /usr/share/libubox/jshn.sh
+		# shellcheck disable=SC1090,SC1091
+		. "${FWLIVE_JSHN_SH:-/usr/share/libubox/jshn.sh}"
 		# json_load masks a failing jshn exit through eval. Check the real
 		# parser once, then evaluate only its generated shell assignments.
 		_json_no_warning=1
@@ -583,8 +830,14 @@ resolve_addresses() {
 		eval "$_json_code" || exit 1
 		if ! json_select addresses 2>/dev/null; then exit 0; fi
 		idx=1
+		# json_get_type false ends the array. A non-string element is skipped
+		# so later strings still resolve; skipped types are not truncated.
 		# shellcheck disable=SC2154
-		while json_get_type atype "$idx" && [ "$atype" = string ]; do
+		while json_get_type atype "$idx"; do
+			if [ "$atype" != string ]; then
+				idx=$((idx + 1))
+				continue
+			fi
 			json_get_var ip "$idx" || exit 1
 			# Preserve JSON element boundaries in the newline transport.
 			# Invalid addresses (including embedded newlines) never leave it.
@@ -602,10 +855,10 @@ resolve_addresses() {
 				truncated=1
 				break
 			fi
-			# Abort cleanly once the whole-call wall-clock budget is spent;
+			# Abort cleanly once the lookup-loop wall-clock budget is spent;
 			# never START a lookup past the budget.
-			now=$(date +%s)
-			if [ $((now - start)) -ge "$RESOLVE_BUDGET" ]; then
+			now=$(fwlive_adaptive_clock_cs)
+			if [ $((now - start)) -ge $((RESOLVE_BUDGET * 100)) ]; then
 				truncated=1
 				break
 			fi
@@ -675,6 +928,49 @@ run_selftest() {
 	escaped=$(printf '%s' "$input" | json_escape)
 	expected=$(printf 'a\\n\\nb')
 	check_eq 'json_escape blank line' "$escaped" "$expected" "expected $expected got $escaped" || return 1
+
+	# Charset applies to every character, not only the first.
+	if ! is_uci_style_name 'Rule'; then
+		echo 'is_uci_style_name: expected accept Rule' >&2
+		return 1
+	fi
+	if ! is_uci_style_name 'Allow-SSH'; then
+		echo 'is_uci_style_name: expected accept Allow-SSH' >&2
+		return 1
+	fi
+	if ! is_uci_style_name '-lead'; then
+		echo 'is_uci_style_name: expected accept -lead' >&2
+		return 1
+	fi
+	if is_uci_style_name 'My Rule'; then
+		echo 'is_uci_style_name: expected reject for space' >&2
+		return 1
+	fi
+	# First character is legal; later $ / ; / . must still fail.
+	# shellcheck disable=SC2016
+	if is_uci_style_name 'rule$x'; then
+		echo 'is_uci_style_name: expected reject rule$x (later-char illegal)' >&2
+		return 1
+	fi
+	if is_uci_style_name 'rule;id'; then
+		echo 'is_uci_style_name: expected reject rule;id (later-char illegal)' >&2
+		return 1
+	fi
+	if is_uci_style_name 'rule.x'; then
+		echo 'is_uci_style_name: expected reject rule.x (later-char illegal)' >&2
+		return 1
+	fi
+	if is_uci_style_name ''; then
+		echo 'is_uci_style_name: expected reject empty' >&2
+		return 1
+	fi
+	# echo would swallow -n/-E and dash echo would expand backslashes.
+	_slug=$(slug_key '-n')
+	check_eq 'slug_key -n' "$_slug" '-n' "expected -n got $_slug" || return 1
+	_slug=$(slug_key '-E')
+	check_eq 'slug_key -E' "$_slug" '-e' "expected -e got $_slug" || return 1
+	_slug=$(slug_key "$(printf 'a\\tb')")
+	check_eq 'slug_key backslash' "$_slug" "$(printf 'a\\tb')" "expected literal backslash got $_slug" || return 1
 
 	if is_resolvable_address 'not an ip'; then
 		echo 'is_resolvable_address: expected reject for spaces' >&2
@@ -746,21 +1042,96 @@ run_selftest() {
 
 	# Escaped-quote capture: a log prefix containing \" must not be truncated
 	# at the escaped quote (nft dumps strings with backslash escapes).
-	got=$(printf '%s\n' 'log prefix "My \" Rule"' | sed -n 's/.*log prefix "\([^"\\]*\(\\.[^"\\]*\)*\)".*/\1/p')
-	if [ "$got" != 'My \" Rule' ]; then
-		echo "escaped-quote prefix capture: expected 'My \\\" Rule' got '$got'" >&2
+	_tab=$(printf '\t')
+	_esc_t=$(printf '\\t')
+	_esc_b=$(printf '\\\\')
+	got=$(printf '%s\n' 'log prefix "My \" Rule"' | nft_dump_fields)
+	got="${got%%${_tab}*}"
+	if [ "$got" != 'My \\" Rule' ]; then
+		echo "escaped-quote prefix capture: expected encoded 'My \\\\\" Rule' got '$got'" >&2
+		return 1
+	fi
+	_nft_tsv_unescape "$got"
+	if [ "$_tsv_out" != 'My \" Rule' ]; then
+		echo "escaped-quote prefix unescape: expected 'My \\\" Rule' got '$_tsv_out'" >&2
 		return 1
 	fi
 	# Plain prefix still captures unchanged.
-	got=$(printf '%s\n' 'log prefix "Plain Rule"' | sed -n 's/.*log prefix "\([^"\\]*\(\\.[^"\\]*\)*\)".*/\1/p')
+	got=$(printf '%s\n' 'log prefix "Plain Rule"' | nft_dump_fields)
+	got="${got%%${_tab}*}"
 	if [ "$got" != 'Plain Rule' ]; then
 		echo "plain prefix capture: expected 'Plain Rule' got '$got'" >&2
 		return 1
 	fi
 	# Empty prefix edge.
-	got=$(printf '%s\n' 'log prefix ""' | sed -n 's/.*log prefix "\([^"\\]*\(\\.[^"\\]*\)*\)".*/\1/p')
+	got=$(printf '%s\n' 'log prefix ""' | nft_dump_fields)
+	got="${got%%${_tab}*}"
 	if [ "$got" != '' ]; then
 		echo "empty prefix capture: expected '' got '$got'" >&2
+		return 1
+	fi
+	# Guest nft list emits a raw tab inside the quoted prefix
+	# (log prefix "fwlive<TAB>tabbed"). Encode it in the TSV field.
+	got=$(printf '%s\n' "log prefix \"fwlive${_tab}tabbed\"" | nft_dump_fields)
+	case "$got" in
+		*"${_tab}"*"${_tab}"*)
+			echo "tabbed prefix TSV: expected one separator tab, got extra" >&2
+			return 1
+			;;
+		*"${_tab}"*) ;;
+		*)
+			echo "tabbed prefix TSV: missing separator tab, got '$got'" >&2
+			return 1
+			;;
+	esac
+	got_prefix="${got%%${_tab}*}"
+	if [ "$got_prefix" != "fwlive${_esc_t}tabbed" ]; then
+		echo "tabbed prefix TSV: expected fwlive\\ttabbed got '$got_prefix'" >&2
+		return 1
+	fi
+	_nft_tsv_unescape "$got_prefix"
+	if [ "$_tsv_out" != "fwlive${_tab}tabbed" ]; then
+		echo "tabbed prefix unescape: expected fwlive<TAB>tabbed" >&2
+		return 1
+	fi
+	# Literal backslash-t must round-trip and not become a tab.
+	got=$(printf '%s\n' "log prefix \"fwlive${_esc_t}lit\"" | nft_dump_fields)
+	got_prefix="${got%%${_tab}*}"
+	if [ "$got_prefix" != "fwlive${_esc_b}tlit" ]; then
+		echo "literal \\\\t TSV: expected fwlive\\\\\\\\tlit got '$got_prefix'" >&2
+		return 1
+	fi
+	_nft_tsv_unescape "$got_prefix"
+	if [ "$_tsv_out" != "fwlive${_esc_t}lit" ]; then
+		echo "literal \\\\t unescape: expected fwlive\\\\tlit got '$_tsv_out'" >&2
+		return 1
+	fi
+	# Tabbed prefix plus !fw4: label: map key is the full prefix.
+	got=$(printf '%s\n' "log prefix \"fwlive${_tab}tabbed\" comment \"!fw4: TabRule\"" | nft_dump_fields)
+	OUT=''
+	_map_keys=0
+	_map_overflow=''
+	map_from_nft_stream all <<EOF
+$got
+EOF
+	if [ "$OUT" != '"fwlive'"${_esc_t}"'tabbed":"TabRule"' ]; then
+		echo "tabbed prefix map: expected full prefix -> TabRule, got $OUT" >&2
+		return 1
+	fi
+	# Comment-only / !fw4: label path is unchanged when there is no tab.
+	got=$(printf '%s\n' 'comment "!fw4: GoodName"' | nft_dump_fields)
+	if [ "$got" != "${_tab}!fw4: GoodName" ]; then
+		echo "comment-only TSV: expected leading tab + !fw4: GoodName got '$got'" >&2
+		return 1
+	fi
+	OUT=''
+	_map_keys=0
+	_map_overflow=''
+	map_from_nft_stream all <<EOF
+$got
+EOF
+	if [ "$OUT" != '"GoodName":"GoodName","goodname":"GoodName"' ]; then
+		echo "comment-only map: expected GoodName mapping, got $OUT" >&2
 		return 1
 	fi
 
@@ -768,6 +1139,10 @@ run_selftest() {
 	check_eq poll_clamp_lines "$got" "$POLL_LINES_MAX" "over-long expected $POLL_LINES_MAX got $got" || return 1
 	got=$(poll_clamp_lines "0")
 	check_eq poll_clamp_lines "$got" "50" "zero expected 50 got $got" || return 1
+	got=$(poll_clamp_lines "000")
+	check_eq poll_clamp_lines "$got" "50" "all-zeros expected 50 got $got" || return 1
+	got=$(poll_clamp_lines "050")
+	check_eq poll_clamp_lines "$got" "50" "leading-zero expected 50 got $got" || return 1
 	got=$(poll_clamp_lines "2001")
 	check_eq poll_clamp_lines "$got" "$POLL_LINES_MAX" "2001 expected $POLL_LINES_MAX got $got" || return 1
 	got=$(poll_clamp_lines "500")
@@ -810,6 +1185,16 @@ Address 1: 8.8.8.8 dns.google")
 	got=$(parse_nslookup_name "Server: 127.0.0.1
 Address: 127.0.0.1:53")
 	check_eq parse_nslookup_name "$got" '' "server-only expected empty got '$got'" || return 1
+	got=$(parse_nslookup_name "hostname = evil.example.")
+	check_eq parse_nslookup_name "$got" '' "hostname = must not parse as name got '$got'" || return 1
+	got=$(parse_nslookup_name "domain name = other.example.")
+	check_eq parse_nslookup_name "$got" '' "domain name = must not parse as name got '$got'" || return 1
+	got=$(parse_nslookup_name "domain  name = two.example.")
+	check_eq parse_nslookup_name "$got" '' "domain  name = must not parse as name got '$got'" || return 1
+	got=$(parse_nslookup_name "domain	 name = tab.example.")
+	check_eq parse_nslookup_name "$got" '' "domain tab name = must not parse as name got '$got'" || return 1
+	got=$(parse_nslookup_name "name = dns.google. hostname = evil.example.")
+	check_eq parse_nslookup_name "$got" "dns.google" "standalone name = must beat hostname = got '$got'" || return 1
 
 	run_logging_selftest || return 1
 
@@ -826,6 +1211,18 @@ Address: 127.0.0.1:53")
 
 	if ! command -v jshn >/dev/null 2>&1; then
 		echo "skip: jshn not available (poll cap via jshn not tested)" >&2
+		return 0
+	fi
+	# Dash rejects libubox `export -n` in json_init. Skip numeric poll-cap
+	# checks unless this interpreter can actually use the helper; poll still
+	# defaults to 50 and logs a named cause in that case.
+	if ! (
+		set +u
+		# shellcheck disable=SC1090,SC1091
+		. "${FWLIVE_JSHN_SH:-/usr/share/libubox/jshn.sh}" 2>/dev/null || exit 1
+		json_init >/dev/null 2>&1
+	); then
+		echo "skip: jshn library not usable (poll cap via jshn not tested)" >&2
 		return 0
 	fi
 
@@ -845,6 +1242,64 @@ Address: 127.0.0.1:53")
 	got=$(poll_lines_from_input '{"addresses":["100"]}')
 	check_eq poll_lines_from_input "$got" "100" "expected 100 got $got" || return 1
 
+	# jshn failures must log a named cause; stdout stays the numeric default.
+	# logger() override is inherited by the $() subshell; command -v still finds
+	# the binary, so the unqualified logger call is what this intercepts.
+	_poll_log="/tmp/fwlive-poll-cause.$$"
+	: > "$_poll_log"
+	logger() { printf '%s\n' "$*" >> "$_poll_log"; }
+
+	got=$(poll_lines_from_input '{"addresses":["500"]}')
+	check_eq poll_lines_from_input "$got" "500" "override path expected 500 got $got" || return 1
+	case "$(cat "$_poll_log")" in
+		*jshn_missing*|*jshn_lib_missing*|*invalid_input*)
+			echo "poll_lines_from_input: successful cap must stay silent, got $(cat "$_poll_log")" >&2
+			rm -f "$_poll_log"
+			unset -f logger
+			return 1
+			;;
+	esac
+
+	: > "$_poll_log"
+	got=$(poll_lines_from_input '{}')
+	check_eq poll_lines_from_input "$got" "50" "missing addresses expected 50 got $got" || return 1
+	case "$(cat "$_poll_log")" in
+		*jshn_missing*|*jshn_lib_missing*|*invalid_input*)
+			echo "poll_lines_from_input: missing addresses[0] must stay silent, got $(cat "$_poll_log")" >&2
+			rm -f "$_poll_log"
+			unset -f logger
+			return 1
+			;;
+	esac
+
+	: > "$_poll_log"
+	got=$(poll_lines_from_input 'not-json{{{')
+	check_eq poll_lines_from_input "$got" "50" "invalid JSON expected 50 got $got" || return 1
+	case "$(cat "$_poll_log")" in
+		*invalid_input*) ;;
+		*) echo "poll_lines_from_input: expected invalid_input log, got $(cat "$_poll_log")" >&2
+			rm -f "$_poll_log"
+			unset -f logger
+			return 1 ;;
+	esac
+
+	: > "$_poll_log"
+	_saved_jshn_sh="$FWLIVE_JSHN_SH"
+	FWLIVE_JSHN_SH="/no/such/fwlive-jshn.sh"
+	got=$(poll_lines_from_input '{"addresses":["500"]}')
+	FWLIVE_JSHN_SH="$_saved_jshn_sh"
+	check_eq poll_lines_from_input "$got" "50" "missing library expected 50 got $got" || return 1
+	case "$(cat "$_poll_log")" in
+		*jshn_lib_missing*) ;;
+		*) echo "poll_lines_from_input: expected jshn_lib_missing log, got $(cat "$_poll_log")" >&2
+			rm -f "$_poll_log"
+			unset -f logger
+			return 1 ;;
+	esac
+
+	rm -f "$_poll_log"
+	unset -f logger
+
 	return 0
 }
 
@@ -855,6 +1310,10 @@ case "${1:-}" in
 		;;
 	__poll_clamp)
 		poll_clamp_lines "${2:-}"
+		exit $?
+		;;
+	__poll_lines)
+		poll_lines_from_input "${2:-}"
 		exit $?
 		;;
 	__tmp_dir_ok)

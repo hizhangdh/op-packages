@@ -25,8 +25,10 @@
  * flowCell, buildColumnCell.
  *
  * Modules must not mutate state. Forced renders clear and rebuild the host;
- * normal polls reuse unchanged keyed rows and only build changed rows. Does
- * not touch #fwlive-scroll or #fwlive-empty.
+ * normal polls reuse unchanged keyed rows and only build changed rows.
+ * rowRenderKey must include every painted field (including resolved hostnames)
+ * so a non-forced paint can refresh display-only changes. Does not touch
+ * #fwlive-scroll or #fwlive-empty.
  */
 
 function columnLabel(col) {
@@ -50,6 +52,28 @@ function columnLabel(col) {
 	};
 
 	return labels[col] || col;
+}
+
+function dirLabel(dir) {
+	const labels = {
+		'in': _('Inbound'),
+		'out': _('Outbound'),
+		'forward': _('Forwarded'),
+		'unknown': _('unknown')
+	};
+
+	return labels[dir] || log.formatCell(dir);
+}
+
+function actionLabel(action) {
+	const labels = {
+		'pass': _('pass'),
+		'block': _('block'),
+		'drop': _('drop'),
+		'reject': _('reject')
+	};
+
+	return labels[action] || log.formatActionLabel(action);
 }
 
 function columnCellClass(col) {
@@ -124,12 +148,7 @@ function buildColumnCell(col, row, state, callbacks) {
 	const msgDisplay = log.formatMessageDisplay(row.message, state.messageLayout);
 	const actionCell =
 		row.action && row.action !== 'unknown'
-			? links.filterLink(
-					'action',
-					row.action,
-					log.formatActionLabel(row.action),
-					onFilterClick
-				)
+			? links.filterLink('action', row.action, actionLabel(row.action), onFilterClick)
 			: log.formatActionLabel(row.action);
 
 	switch (col) {
@@ -162,7 +181,7 @@ function buildColumnCell(col, row, state, callbacks) {
 				)
 			]);
 		case 'dir':
-			return E('td', { 'class': columnCellClass(col) }, [log.formatCell(row.direction)]);
+			return E('td', { 'class': columnCellClass(col) }, [dirLabel(row.direction)]);
 		case 'proto':
 			return E('td', { 'class': columnCellClass(col) }, [
 				links.filterLink('proto', row.proto, null, onFilterClick)
@@ -251,6 +270,16 @@ function renderThead(host, state, _callbacks) {
 	}
 }
 
+function hostnameCacheValue(ip, state) {
+	if (!state.showHostnames || !state.hostnameCache || !ip) return '';
+	const key =
+		typeof ip === 'string' && ip.lastIndexOf('%') !== -1
+			? ip.slice(0, ip.lastIndexOf('%'))
+			: ip;
+	const value = state.hostnameCache.get ? state.hostnameCache.get(key) : undefined;
+	return value == null ? '' : String(value);
+}
+
 function rowRenderKey(row, state, columns) {
 	return JSON.stringify([
 		row.id,
@@ -274,7 +303,9 @@ function rowRenderKey(row, state, columns) {
 		state.messageLayout,
 		state.expandedRowId === row.id,
 		!!state.rowTint,
-		!!state.showHostnames
+		!!state.showHostnames,
+		hostnameCacheValue(row.src, state),
+		hostnameCacheValue(row.dst, state)
 	]);
 }
 
@@ -312,7 +343,8 @@ function buildExpansionRow(row, state, columns) {
 		E('td', { 'colspan': String(columns.length) }, [
 			E('div', { 'class': 'fwlive-msg-expand-label' }, [_('Message')]),
 			E('pre', { 'class': 'fwlive-msg-expand-body' }, [
-				log.formatMessageDisplay(row.message, 'wrap') || '—'
+				/* oneline is uncapped; wrap ellipsizes at 240 */
+				log.formatMessageDisplay(row.message, 'oneline') || '—'
 			])
 		])
 	]);

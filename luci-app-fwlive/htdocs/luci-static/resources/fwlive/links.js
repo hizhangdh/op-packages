@@ -12,7 +12,10 @@
  *   luciUrl, firewallZonesPath, firewallZonesUrl, firewallZonesLink
  *
  * Filter-aware helpers (require an onFilterClick callback):
- *   filterLink, addrFilterLink, ruleAdminPath, ruleAdminLink, ifaceLink
+ *   filterLink, addrFilterLink, ruleAdminLink, ifaceLink
+ *
+ * Constant path helper:
+ *   ruleAdminPath
  *
  * No host element — all functions return DOM nodes or strings.
  * May require fwlive.log for formatCell and fwlive.hostname for cache reads.
@@ -57,7 +60,7 @@ function filterLink(field, value, label, onFilterClick) {
 		{
 			'href': '#',
 			'class': 'fwlive-filter-link',
-			'title': _('Filter by %s').format(field),
+			'title': _('Filter by %s').format(log.filterFieldLabel(field)),
 			'click': function (ev) {
 				onFilterClick(field, value, ev);
 			}
@@ -78,14 +81,19 @@ function addrFilterLink(field, ip, showHostnames, hostnameCache, onFilterClick) 
 
 	let name = null;
 	if (showHostnames && hostnameCache) {
+		/* Resolve stores the bare address; scoped rows still look up that key. */
+		const cacheKey =
+			typeof ip === 'string' && ip.lastIndexOf('%') !== -1
+				? ip.slice(0, ip.lastIndexOf('%'))
+				: ip;
 		/* Display reads refresh recency so visible names remain warm in the LRU. */
 		name =
 			hostname && typeof hostname.lruGet === 'function'
-				? hostname.lruGet(hostnameCache, ip)
-				: hostnameCache.get(ip);
+				? hostname.lruGet(hostnameCache, cacheKey)
+				: hostnameCache.get(cacheKey);
 	}
 	const display = name || ip;
-	const title = name ? ip : _('Filter by %s').format(field);
+	const title = name ? ip : _('Filter by %s').format(log.filterFieldLabel(field));
 
 	return E(
 		'a',
@@ -150,7 +158,7 @@ function ifaceLink(value, onFilterClick) {
 		{
 			'href': '#',
 			'class': 'fwlive-filter-link fwlive-iface-badge',
-			'title': _('Filter by interface'),
+			'title': _('Filter by %s').format(log.filterFieldLabel('interface')),
 			'click': function (ev) {
 				onFilterClick('interface', value, ev);
 			}

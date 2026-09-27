@@ -15,8 +15,8 @@ function normalize(s, keys, n, i, k) {
 	return s
 }
 function trim(s) {
-	sub(/^[[:space:]]+/, "", s)
-	sub(/[[:space:]]+$/, "", s)
+	sub(/^([ \t\n\r]|\302\240)+/, "", s)
+	sub(/([ \t\n\r]|\302\240)+$/, "", s)
 	return s
 }
 function has_kv(s, key) {
@@ -64,6 +64,8 @@ function json_unhex4(h, n, i, c, v) {
 	return n
 }
 function json_get_msg(obj, s, i, c, esc, out, hex, n) {
+	# Summary decoder is ASCII/Latin-1 oriented. \uXXXX outside 1..255 is
+	# collapsed (not UTF-8). Invalid \u appends u. NUL is dropped.
 	if (!match(obj, /"msg"[[:space:]]*:[[:space:]]*"/)) return ""
 	s = substr(obj, RSTART + RLENGTH)
 	out = ""
@@ -79,6 +81,8 @@ function json_get_msg(obj, s, i, c, esc, out, hex, n) {
 			else if (c == "u") {
 				hex = substr(s, i + 1, 4)
 				n = (length(hex) == 4) ? json_unhex4(hex) : -1
+				# 1..255: Latin-1 %c. n>255: collapse. n<0: append u.
+				# n==0 (NUL): BusyBox awk strings cannot hold NUL; drop it.
 				if (n >= 1 && n <= 255) out = out sprintf("%c", n)
 				else if (n < 0) out = out "u"
 				if (n >= 0) i += 4
@@ -132,11 +136,17 @@ function summary_rule(s, first) {
 	s = trim(normalize(s))
 	sub(/^\[[[:space:]]*[0-9.]+\][[:space:]]*/, "", s)
 	if (tolower(s) ~ /^fw4:[[:space:]]*/) return "fw4"
-	first = s
-	sub(/[[:space:]:].*/, "", first)
-	if (first == "" || first ~ /^(IN|OUT|SRC|DST|PROTO|SPT|DPT|LEN|MAC|TYPE|CODE|TTL|TOS|PREC|DF)=/) return ""
-	if (tolower(first) == "kernel" || tolower(first) == "iptables") return ""
-	return utf8_prefix(first, 64)
+	# Shared with parseRuleHint: token then IN=/OUT=/SRC=/DST=/PROTO=, else colon tag.
+	if (match(s, "^[A-Za-z0-9_.-]+(:|[[:space:]]+)(IN=|OUT=|SRC=|DST=|PROTO=)")) {
+		match(s, "^[A-Za-z0-9_.-]+")
+		return utf8_prefix(substr(s, RSTART, RLENGTH), 64)
+	}
+	if (match(s, "^[A-Za-z0-9_.-]+:")) {
+		first = substr(s, RSTART, RLENGTH - 1)
+		if (tolower(first) == "kernel" || tolower(first) == "iptables") return ""
+		return utf8_prefix(first, 64)
+	}
+	return ""
 }
 function summary_add_count(counts, key) {
 	if (key != "") counts[key]++
