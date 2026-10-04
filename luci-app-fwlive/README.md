@@ -11,6 +11,7 @@ LuCI **Firewall Live View** — client-side JS view polling `ubus fwlive poll` (
 | `htdocs/luci-static/resources/fwlive/log.js` | Parser/filter module (mirror of repo `core/fwlive-log.js`) |
 | `htdocs/luci-static/resources/fwlive/proto.js` | Protocol filter pair (select + custom field; typed custom wins) |
 | `htdocs/luci-static/resources/fwlive/constants.js` | Shared view constants (`baseclass.extend` module) |
+| `htdocs/luci-static/resources/fwlive/fwlive.css` | Stylesheet source; run `node scripts/embed-fwlive-css.js` to regenerate `css.js` |
 | `htdocs/luci-static/resources/fwlive/css.js` | Inline stylesheet string (`styleText` for `E('style', …)`) |
 | `htdocs/luci-static/resources/fwlive/tint.js` | Row-tint paint helpers (`baseclass.extend` module) |
 | `htdocs/luci-static/resources/fwlive/links.js` | Link-builder helpers (pure + filter-aware; no host) |
@@ -27,7 +28,8 @@ LuCI **Firewall Live View** — client-side JS view polling `ubus fwlive poll` (
 | `root/usr/libexec/rpcd/fwlive` | rpcd plugin (`rules`, `poll`, `resolve`, `logging_status`, `enable_wan_logging`, `disable_wan_logging`) |
 | `root/usr/libexec/fwlive-adaptive-cap.sh` | Layer 1 adaptive poll cap (sourced by `rpcd/fwlive`) |
 | `root/usr/libexec/fwlive-logging.sh` | WAN zone logging helpers |
-| `/etc/fwlive/wan-log-baseline` | Written on first **Enable logging**; restored on uninstall (`prerm`). Disable of a pre-existing/foreign log bit is not snapshotted, so uninstall will not restore that bit. |
+| `root/lib/upgrade/keep.d/luci-app-fwlive` | Keep `/etc/fwlive/` across sysupgrade |
+| `/etc/fwlive/wan-log-baseline` | Written on first **Enable logging** (and best-effort on already-on enable); `prerm` restores it on uninstall. Restore is skipped (file kept; `fwlive` syslog only) when there is no WAN zone, the lock is unavailable, firewall changes are pending, the commit does not verify, reload fails, or the value after reload does not match the baseline. Disable of a pre-existing/foreign log bit is not snapshotted, so uninstall will not restore that bit. |
 | `root/usr/libexec/fwlive-log-filter.sh` | Server-side firewall-only filter (`isFirewallEvent` parity) |
 | `root/usr/libexec/fwlive-is-firewall-event.sh` | Shared filter logic (sourced by filter + tests) |
 | `root/usr/libexec/fwlive-is-firewall-event.awk` | **Generated** standalone classifier from `CLASSIFY_SPEC`; loaded by `fwlive-is-firewall-event.sh` |
@@ -42,6 +44,16 @@ No `luasrc/` — modern JS-only app.
 - No hard `firewall4` dependency
 - Menu depends on ACL only (no `fs` AND of `nft`+`iptables` — that hid the entry on stock fw3 and fw4)
 - Runtime backend detection selects **fw4/nft** on supported **23.05+** images; log lines tagged **iptables** still classify. OpenWrt **21.02** / **22.03** are unsupported
+
+The rpcd plugin invokes its read helpers directly and does not require GNU
+`timeout`. The `log.read` ubus invocation uses ubus's native five-second reply
+timeout after object lookup; this does not cancel a remote method already
+running. Existing line, byte, and count limits still apply, and reverse DNS
+stops starting lookups after its elapsed-time budget. Other helpers have no
+fwlive deadline. Stock rpcd kills the plugin process after its configured
+execution timeout (30 seconds), but does not kill its descendants; helpers can
+outlive the request. This is an accepted maintenance tradeoff, to be
+reconsidered if users report reliability problems.
 
 ## Maintenance
 

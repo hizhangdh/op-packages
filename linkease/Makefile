@@ -11,8 +11,8 @@ PKG_ARCH_LINKEASE:=$(ARCH)
 
 PKG_NAME:=linkease
 # use PKG_SOURCE_DATE instead of PKG_VERSION for compitable
-PKG_SOURCE_DATE:=1.7.5
-PKG_RELEASE:=37
+PKG_SOURCE_DATE:=1.7.6
+PKG_RELEASE:=38
 
 ARCH_HEXCODE:=
 ifeq ($(ARCH),x86_64)
@@ -28,7 +28,7 @@ else ifeq ($(ARCH),mipsel)
 ARCH_HEXCODE=1b0c
 endif
 
-PKG_SOURCE_VERSION:=003afc294e0a56b8d92b967af5684dcd33a23bf3
+PKG_SOURCE_VERSION:=c76856a27c84b22c6f8ab9e5f2f7111cde397ba2
 PKG_SOURCE:=linkease-bin-$(PKG_SOURCE_DATE)-linux-$(PKG_ARCH_LINKEASE).tar.gz
 PKG_SOURCE_URL:=https://github.com/istoreos/istoreos-app-hub/releases/download/linkease-runtime-v$(PKG_SOURCE_DATE)/
 PKG_BUILD_DIR:=$(BUILD_DIR)/linkease-bin-$(PKG_SOURCE_DATE)-linux-$(PKG_ARCH_LINKEASE)
@@ -44,6 +44,7 @@ define Package/$(PKG_NAME)
 	SUBMENU:=Web Servers/Proxies
 	TITLE:=LinkEase - the file cloud
 	DEPENDS:=@(arm||x86_64||aarch64) +linkease-common-bin
+	EXTRA_DEPENDS:=linkease-common-bin (>=1.7.6~0)
 	PKGARCH:=all
 	URL:=https://www.linkease.com/
 endef

@@ -216,19 +216,23 @@
 }
 /* Draw our own disclosure arrow — themes that restyle summary drop the native marker. */
 .fwlive-more-filters > summary,
-.fwlive-help > summary {
+.fwlive-help > summary,
+.fwlive-rules-details > summary {
 	cursor: pointer;
 	list-style: none;
 }
 .fwlive-more-filters > summary::-webkit-details-marker,
-.fwlive-help > summary::-webkit-details-marker { display: none; }
+.fwlive-help > summary::-webkit-details-marker,
+.fwlive-rules-details > summary::-webkit-details-marker { display: none; }
 .fwlive-more-filters > summary::before,
-.fwlive-help > summary::before {
+.fwlive-help > summary::before,
+.fwlive-rules-details > summary::before {
 	content: "▸ ";
 	color: var(--text-color-medium);
 }
 .fwlive-more-filters[open] > summary::before,
-.fwlive-help[open] > summary::before { content: "▾ "; }
+.fwlive-help[open] > summary::before,
+.fwlive-rules-details[open] > summary::before { content: "▾ "; }
 .fwlive-ctl {
 	display: inline-flex;
 	align-items: center;
@@ -280,7 +284,8 @@
 }
 #fwlive-table { margin: 0; width: 100%; table-layout: auto; border-collapse: collapse; }
 .fwlive-map[data-view="simple"] #fwlive-table { table-layout: fixed; width: 100%; }
-.fwlive-map[data-view="simple"] col.fwlive-col-action { width: 5rem; }
+/* Keep the localized action label and message button inside the first cell. */
+.fwlive-map[data-view="simple"] col.fwlive-col-action { width: 11.5em; }
 .fwlive-map[data-view="simple"] col.fwlive-col-time { width: 5rem; }
 .fwlive-map[data-view="simple"] col.fwlive-col-iface { width: 5.5rem; }
 .fwlive-map[data-view="simple"] col.fwlive-col-proto { width: 4rem; }
@@ -533,6 +538,9 @@
 .fwlive-logging-notice {
 	color: var(--fwlive-pass-color);
 }
+.fwlive-logging-notice-fail {
+	color: var(--fwlive-deny-color);
+}
 .fwlive-filter-link {
 	color: inherit;
 	text-decoration: underline;
@@ -751,6 +759,15 @@
 	color: var(--warn-color-high);
 	font-weight: 600;
 }
+.fwlive-rules-details {
+	margin: 4px 0 8px;
+	color: var(--text-color-high);
+}
+#fwlive-rules-details-body {
+	margin: 6px 0;
+	white-space: pre-line;
+	overflow-wrap: anywhere;
+}
 .fwlive-filter-panel { margin-bottom: 12px; }
 .fwlive-map[data-view="simple"] .fwlive-grid-core {
 	display: grid;
@@ -774,6 +791,32 @@
 .fwlive-map[data-view="detailed"] .fwlive-grid-extra,
 .fwlive-map[data-view="detailed"] .fwlive-more-filters { display: contents; }
 .fwlive-row-clickable { cursor: pointer; }
+.fwlive-row-expand {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.5em;
+	min-width: 24px;
+	height: 24px;
+	padding: 0;
+	margin-left: 3px;
+	border: 1px solid var(--border-color-medium);
+	border-radius: 3px;
+	background: transparent;
+	color: var(--text-color-medium);
+	font: inherit;
+	line-height: 1;
+	vertical-align: middle;
+	cursor: pointer;
+}
+.fwlive-row-expand:hover {
+	color: var(--primary-color-high);
+	border-color: var(--primary-color-medium, var(--primary-color-high));
+}
+.fwlive-row-expand:focus-visible {
+	outline: 2px solid var(--primary-color-high);
+	outline-offset: 2px;
+}
 .fwlive-row-expanded td { border-bottom-color: transparent; }
 .fwlive-msg-expand td {
 	background: var(--background-color-low);

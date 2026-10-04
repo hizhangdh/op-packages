@@ -4,6 +4,7 @@
 'require baseclass';
 'require fwlive.log as log';
 'require fwlive.links as links';
+'require fwlive.hostname as hostname';
 
 /**
  * Table thead/rows DOM renderer for luci-app-fwlive.
@@ -53,6 +54,8 @@ function columnLabel(col) {
 
 	return labels[col] || col;
 }
+
+const EXPANSION_PANEL_ID = 'fwlive-expanded-message';
 
 function dirLabel(dir) {
 	const labels = {
@@ -143,6 +146,28 @@ function flowCell(row, state, callbacks) {
 	return E('span', { 'class': 'fwlive-flow' }, parts);
 }
 
+function rowExpandButton(row, state, callbacks) {
+	const expanded = state.expandedRowId === row.id;
+	const action = expanded ? _('Hide full message') : _('Show full message');
+	const button = E(
+		'button',
+		{
+			'type': 'button',
+			'class': 'fwlive-row-expand',
+			'aria-label': String(action),
+			'aria-expanded': expanded ? 'true' : 'false',
+			'aria-controls': expanded ? EXPANSION_PANEL_ID : null,
+			'click': function (ev) {
+				if (ev && ev.stopPropagation) ev.stopPropagation();
+				callbacks.onRowClick(row.id, ev);
+			}
+		},
+		[expanded ? '▾' : '▸']
+	);
+	button._fwliveRowId = String(row.id);
+	return button;
+}
+
 function buildColumnCell(col, row, state, callbacks) {
 	const onFilterClick = callbacks.onFilterClick;
 	const msgDisplay = log.formatMessageDisplay(row.message, state.messageLayout);
@@ -155,15 +180,21 @@ function buildColumnCell(col, row, state, callbacks) {
 		case 'time': {
 			const timeAttrs = { 'class': columnCellClass(col) };
 			if (state.viewMode === 'simple')
-				timeAttrs.title = _('Click a row for the full message');
+				timeAttrs.title = _(
+					'Activate the message button or click a row to show or hide the full message'
+				);
 			return E('td', timeAttrs, [
 				state.viewMode === 'simple'
 					? log.formatTimestampCompact(row.timestamp)
 					: log.formatTimestampLocal(row.timestamp)
 			]);
 		}
-		case 'action':
-			return E('td', { 'class': log.actionRowClass(row.action) }, [actionCell]);
+		case 'action': {
+			const actionChildren = [actionCell];
+			if (state.viewMode === 'simple')
+				actionChildren.push(' ', rowExpandButton(row, state, callbacks));
+			return E('td', { 'class': log.actionRowClass(row.action) }, actionChildren);
+		}
 		case 'rule':
 			return E('td', { 'class': columnCellClass(col) }, [
 				links.ruleAdminLink(row.rule_hint, row.rule_label, onFilterClick)
@@ -271,13 +302,8 @@ function renderThead(host, state, _callbacks) {
 }
 
 function hostnameCacheValue(ip, state) {
-	if (!state.showHostnames || !state.hostnameCache || !ip) return '';
-	const key =
-		typeof ip === 'string' && ip.lastIndexOf('%') !== -1
-			? ip.slice(0, ip.lastIndexOf('%'))
-			: ip;
-	const value = state.hostnameCache.get ? state.hostnameCache.get(key) : undefined;
-	return value == null ? '' : String(value);
+	if (!state.showHostnames) return '';
+	return hostname.cachedName(state.hostnameCache, ip) || '';
 }
 
 function rowRenderKey(row, state, columns) {
@@ -320,7 +346,7 @@ function rowClass(index, row, state, callbacks) {
 		.join(' ');
 }
 
-function buildRow(row, index, state, columns, callbacks) {
+function buildRow(row, index, state, columns, callbacks, key) {
 	const cells = [];
 	for (let c = 0; c < columns.length; c++)
 		cells.push(buildColumnCell(columns[c], row, state, callbacks));
@@ -334,7 +360,7 @@ function buildRow(row, index, state, columns, callbacks) {
 		cells
 	);
 	tr._fwliveRowId = String(row.id);
-	tr._fwliveRowKey = rowRenderKey(row, state, columns);
+	tr._fwliveRowKey = key === undefined ? rowRenderKey(row, state, columns) : key;
 	return tr;
 }
 
@@ -342,7 +368,7 @@ function buildExpansionRow(row, state, columns) {
 	const expansion = E('tr', { 'class': 'fwlive-msg-expand' }, [
 		E('td', { 'colspan': String(columns.length) }, [
 			E('div', { 'class': 'fwlive-msg-expand-label' }, [_('Message')]),
-			E('pre', { 'class': 'fwlive-msg-expand-body' }, [
+			E('pre', { 'id': EXPANSION_PANEL_ID, 'class': 'fwlive-msg-expand-body' }, [
 				/* oneline is uncapped; wrap ellipsizes at 240 */
 				log.formatMessageDisplay(row.message, 'oneline') || '—'
 			])
@@ -363,21 +389,11 @@ function renderAllRows(host, rows, state, columns, callbacks) {
 	}
 }
 
-function canReuseRows(host) {
-	return (
-		host &&
-		host.childNodes &&
-		typeof host.childNodes.length === 'number' &&
-		typeof host.insertBefore === 'function' &&
-		typeof host.removeChild === 'function'
-	);
-}
-
 function renderRows(host, state, callbacks) {
 	const rows = state.rows || [];
 	const columns = state.columns || [];
 
-	if (state.forceRender || !canReuseRows(host)) {
+	if (state.forceRender) {
 		renderAllRows(host, rows, state, columns, callbacks);
 		return;
 	}
@@ -398,7 +414,7 @@ function renderRows(host, state, callbacks) {
 		const id = String(row.id);
 		const key = rowRenderKey(row, state, columns);
 		let tr = existingRows.get(id);
-		if (!tr || tr._fwliveRowKey !== key) tr = buildRow(row, i, state, columns, callbacks);
+		if (!tr || tr._fwliveRowKey !== key) tr = buildRow(row, i, state, columns, callbacks, key);
 		else tr.setAttribute('class', rowClass(i, row, state, callbacks));
 		tr._fwliveRowId = id;
 		tr._fwliveRowKey = key;

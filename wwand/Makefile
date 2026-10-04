@@ -50,12 +50,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=wwand
-PKG_VERSION:=1.6.8_p41
-PKG_RELEASE:=54
+PKG_VERSION:=1.6.9_p5
+PKG_RELEASE:=55
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/ddimension/wwand.git
-PKG_SOURCE_VERSION:=113788ba066262395e84ac8f8e9ad11a5facfaf8
+PKG_SOURCE_VERSION:=c52913c970fa31f845dcb464339cc8c8ab1dac5b
 PKG_MIRROR_HASH:=skip
 
 PKG_LICENSE:=GPL-2.0-only
@@ -641,14 +641,29 @@ endef
 
 define Package/wwand-apntest/description
 Runs the configured APN tests in sequence on a dedicated test box: selects the
-SIM (physical slot or eUICC profile), dials each APN through wwand, runs the
-configured checks and reports one verdict per test. Tests are grouped by SIM so
-each slot switch or profile enable happens once per run.
+SIM (physical slot), dials each APN through wwand and netifd, checks the address
+pool and resolvers, pings, and reports one verdict per check to an NSCA monitor
+(send_nsca, when `monitor` is configured). Tests are grouped by SIM so each slot
+switch happens once per run. Scheduled from cron (globals.schedule).
+endef
+
+define Package/wwand-apntest/conffiles
+/etc/config/apntest
 endef
 
 define Package/wwand-apntest/install
 	$(INSTALL_DIR) $(1)$(UCDIR)/apntest
 	$(INSTALL_DATA) $(WWAND_UCODE)/apntest/plan.uc $(1)$(UCDIR)/apntest/
+	$(INSTALL_DATA) $(WWAND_UCODE)/apntest/runner.uc $(1)$(UCDIR)/apntest/
+	$(INSTALL_DIR) $(1)/usr/sbin
+	$(INSTALL_BIN) $(WWAND_UCODE)/apntest_cli.uc $(1)/usr/sbin/wwand-apntest
+	# no daemon: the init script only keeps the cron line of the plan's
+	# schedule in root's crontab (start, reload_config, stop)
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/wwand-apntest.init $(1)/etc/init.d/wwand-apntest
+	# empty plan by default: nothing runs until a test is configured
+	$(INSTALL_DIR) $(1)/etc/config
+	$(INSTALL_CONF) $(PKG_BUILD_DIR)/files/apntest.config $(1)/etc/config/apntest
 endef
 
 $(eval $(call BuildPackage,wwand))

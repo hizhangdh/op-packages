@@ -9,7 +9,7 @@
  *
  * renderToolbar(host, state, callbacks) → void
  *   host      - #fwlive-logging-bar strip slot (cleared and rebuilt; element kept)
- *   state     - { loggingStatus, loggingBusy, loggingNotice }
+ *   state     - { loggingStatus, loggingBusy, loggingNotice, loggingNoticeFail }
  *   callbacks - { onEnable(), onDisable() }
  *
  * G Hybrid chrome: when WAN logging is on, one merged control carries status +
@@ -24,6 +24,9 @@
  *   renderEmptyState(host, state, callbacks) → void
  *     state     - loggingState + { showConsent }
  *     callbacks - { onEnable(), onDismissConsent(persist) }
+ *
+ * toggleFailureNotice(code, fallback) → string
+ *   rpcd enable/disable error code → notice; unknown codes return fallback.
  *
  * Modules must not mutate state. host is cleared then rebuilt (idempotent replace).
  */
@@ -46,18 +49,51 @@ function persistConsentDismissed() {
 	}
 }
 
+/* Shared by enable and disable; codes a toggle cannot emit fall through. */
+function toggleFailureNotice(code, fallback) {
+	switch (code) {
+		case 'nf_log_missing':
+			return _('Cannot enable logging until kernel log modules are installed.');
+		case 'firewall_changes_pending':
+			return _('Another change is staged for the firewall; apply or revert it first.');
+		case 'no_wan_zone':
+			return _('No WAN zone found; cannot toggle logging without one.');
+		case 'lock_failed':
+			return _('Could not acquire the logging lock.');
+		case 'rollback_tracking_failed':
+			return _('Could not track the logging change safely; logging was not changed.');
+		case 'baseline_snapshot_failed':
+			return _('Could not snapshot the current logging state.');
+		case 'firewall_reload_failed':
+			return _('The firewall did not reload; saved and live logging may differ.');
+		case 'uci_set_failed':
+			return _('Could not write the WAN zone log option.');
+		case 'uci_delete_failed':
+			return _('Could not clear the WAN zone log option.');
+		case 'uci_commit_failed':
+			return _('Could not save the firewall configuration.');
+		case 'firewall_commit_raced':
+			return _(
+				'Another change overwrote WAN logging after it was saved; check the current state.'
+			);
+		default:
+			return fallback;
+	}
+}
+
 function enableLoggingButton(state, callbacks) {
 	return E(
 		'button',
 		{
 			'class': 'cbi-button cbi-button-action',
 			'type': 'button',
+			'title': _('Enable WAN zone drop/reject logging (same as Network → Firewall).'),
 			'disabled': state.loggingBusy ? '' : null,
 			'click': function () {
 				callbacks.onEnable();
 			}
 		},
-		[state.loggingBusy ? _('Enabling…') : _('Enable WAN drop/reject logging')]
+		[state.loggingBusy ? _('Enabling…') : _('Enable logging')]
 	);
 }
 
@@ -88,9 +124,15 @@ function labelWithZoneCandidates(label, st) {
 	return children;
 }
 
+function loggingNoticeClass(state) {
+	return state.loggingNoticeFail
+		? 'fwlive-logging-notice fwlive-logging-notice-fail'
+		: 'fwlive-logging-notice';
+}
+
 function appendLoggingNotice(host, state) {
 	if (!state.loggingNotice) return;
-	host.appendChild(E('span', { 'class': 'fwlive-logging-notice' }, [state.loggingNotice]));
+	host.appendChild(E('span', { 'class': loggingNoticeClass(state) }, [state.loggingNotice]));
 }
 
 function appendBlockerStatus(host, blocker, st) {
@@ -174,21 +216,7 @@ function renderToolbar(host, state, callbacks) {
 		return;
 	}
 
-	host.appendChild(
-		E(
-			'button',
-			{
-				'class': 'cbi-button cbi-button-action',
-				'type': 'button',
-				'title': _('Enable WAN zone drop/reject logging (same as Network → Firewall).'),
-				'disabled': state.loggingBusy ? '' : null,
-				'click': function () {
-					callbacks.onEnable();
-				}
-			},
-			[state.loggingBusy ? _('Enabling…') : _('Enable logging')]
-		)
-	);
+	host.appendChild(enableLoggingButton(state, callbacks));
 	appendLoggingNotice(host, state);
 }
 
@@ -254,7 +282,7 @@ function buildEmptyStateNodes(state, callbacks) {
 
 	if (state.loggingNotice) {
 		nodes.push(
-			E('p', { 'class': 'fwlive-logging-notice' }, [
+			E('p', { 'class': loggingNoticeClass(state) }, [
 				state.loggingNotice,
 				' ',
 				links.firewallZonesLink()
@@ -287,15 +315,16 @@ function buildEmptyStateNodes(state, callbacks) {
 		nodes.push(
 			E('p', {}, [
 				_(
-					'Kernel netfilter log modules are missing. Install kmod-nf-log-ipv4 and kmod-nf-log-ipv6 (or kmod-nf-log / kmod-nf-log6), then reload the firewall.'
+					'Install kmod-nf-log and kmod-nf-log6 with the command for your OpenWrt release, then reload the firewall.'
 				)
 			])
 		);
+		nodes.push(E('p', {}, [_('OpenWrt 24.10 and older (opkg):')]));
 		nodes.push(
-			E('p', {}, [
-				E('code', {}, ['opkg update && opkg install kmod-nf-log-ipv4 kmod-nf-log-ipv6'])
-			])
+			E('p', {}, [E('code', {}, ['opkg update && opkg install kmod-nf-log kmod-nf-log6'])])
 		);
+		nodes.push(E('p', {}, [_('OpenWrt 25.12 and newer (apk):')]));
+		nodes.push(E('p', {}, [E('code', {}, ['apk -U add kmod-nf-log kmod-nf-log6'])]));
 		return nodes;
 	}
 
@@ -352,7 +381,9 @@ function buildEmptyStateNodes(state, callbacks) {
 		])
 	);
 	nodes.push(
-		E('p', { 'class': 'fwlive-empty-muted' }, [_('Nothing changes until you click Enable.')])
+		E('p', { 'class': 'fwlive-empty-muted' }, [
+			_('Nothing changes until you click Enable logging.')
+		])
 	);
 	nodes.push(
 		E('p', {}, [
@@ -392,6 +423,7 @@ return baseclass.extend({
 	CONSENT_STORAGE_KEY: CONSENT_STORAGE_KEY,
 	consentDismissedPermanent: consentDismissedPermanent,
 	persistConsentDismissed: persistConsentDismissed,
+	toggleFailureNotice: toggleFailureNotice,
 	renderToolbar: renderToolbar,
 	buildEmptyStateNodes: buildEmptyStateNodes,
 	renderEmptyState: renderEmptyState,

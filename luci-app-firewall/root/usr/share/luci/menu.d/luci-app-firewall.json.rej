@@ -1,0 +1,11 @@
+--- luci-app-firewall/root/usr/share/luci/menu.d/luci-app-firewall.json
++++ luci-app-firewall/root/usr/share/luci/menu.d/luci-app-firewall.json
+@@ -65,8 +65,5 @@
+ 			"type": "view",
+ 			"path": "firewall/custom"
+ 		},
+-		"depends": {
+-			"fs": { "/usr/share/fw3/helpers.conf": "file" }
+-		}
+ 	}
+ }

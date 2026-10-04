@@ -103,11 +103,9 @@ function is_fw(s, action) {
 	if (s == "") return 0
 	if (non_fw_prefix(s)) return 0
 	action = detect_action(s)
-	if (has_kv(s, "SRC") && has_kv(s, "DST")) return 1
-	if ((has_kv(s, "IN") || has_kv(s, "OUT")) && (has_kv(s, "SRC") || has_kv(s, "DST") || has_kv(s, "PROTO") || has_kv(s, "SPT") || has_kv(s, "DPT"))) return 1
-	if (action != "UNKNOWN" && (has_kv(s, "IN") || has_kv(s, "OUT") || has_kv(s, "PROTO") || has_kv(s, "SRC") || has_kv(s, "DST"))) return 1
-	if (has_hint(s) && action != "UNKNOWN") return 1
-	if (has_hint(s) && (has_kv(s, "IN") || has_kv(s, "OUT") || has_kv(s, "SRC") || has_kv(s, "DST") || has_kv(s, "PROTO"))) return 1
+	if (((has_kv(s, "SRC") && has_kv(s, "DST")) || ((has_kv(s, "IN") || has_kv(s, "OUT")) && (has_kv(s, "SRC") || has_kv(s, "DST") || has_kv(s, "PROTO") || has_kv(s, "SPT") || has_kv(s, "DPT"))) || (action != "UNKNOWN" && (has_kv(s, "IN") || has_kv(s, "OUT") || has_kv(s, "PROTO") || has_kv(s, "SRC") || has_kv(s, "DST"))))) return 1
+	if ((has_hint(s) && action != "UNKNOWN")) return 1
+	if ((has_hint(s) && (has_kv(s, "IN") || has_kv(s, "OUT") || has_kv(s, "SRC") || has_kv(s, "DST") || has_kv(s, "PROTO")))) return 1
 	return 0
 }
 function utf8_prefix(s, max_bytes, out, i, c, width) {
@@ -160,7 +158,7 @@ function json_escape(s, out, i, c) {
 		else if (c == "\n") out = out "\\n"
 		else if (c == "\r") out = out "\\r"
 		else if (c == "\t") out = out "\\t"
-		else if (c < " ") out = out " "
+		else if (c in json_control_ord) out = out sprintf("\\u%04x", json_control_ord[c])
 		else out = out c
 	}
 	return out
@@ -197,10 +195,12 @@ function summary_json(out) {
 	out = out ",\"top_drops\":" summary_top(summary_drop_counts, 3)
 	out = out ",\"top_rules\":" summary_top(summary_rule_counts, 3) "}"
 	# LC_ALL=C makes this a byte budget; utf8_prefix keeps field cuts valid.
-	if (length(out) > 256) return "{\"scope\":\"top of shown sample\",\"truncated\":true}"
+	if (length(out) > 1024) return "{\"scope\":\"top of shown sample\",\"truncated\":true}"
 	return out
 }
 BEGIN {
+	for (i = 1; i < 32; i++) json_control_ord[sprintf("%c", i)] = i
+	json_control_ord[sprintf("%c", 127)] = 127
 	if (MODE == "json_reply") {
 		ORS = ""
 		printf "{\"log\":["

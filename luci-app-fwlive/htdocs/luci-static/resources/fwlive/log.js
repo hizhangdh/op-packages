@@ -61,6 +61,90 @@ const CLASSIFY_SPEC = {
 	]
 };
 
+/* Validate the trusted module configuration once, before constructing regexes. */
+validateClassifySpec(CLASSIFY_SPEC);
+
+/* Compile only the finite KV vocabulary from the validated static rules. */
+const KV_HAS_PATTERNS = Object.create(null);
+
+function compileKvHasPatterns(node) {
+	const keys = Object.keys(node);
+	const operator = keys[0];
+	if (operator === 'and' || operator === 'or') {
+		for (let i = 0; i < node[operator].length; i++) compileKvHasPatterns(node[operator][i]);
+		return;
+	}
+	if (operator !== 'kv' && operator !== 'kvAny') return;
+
+	const names = node[operator];
+	for (let i = 0; i < names.length; i++) {
+		const name = names[i];
+		if (!Object.prototype.hasOwnProperty.call(KV_HAS_PATTERNS, name)) {
+			KV_HAS_PATTERNS[name] = new RegExp('(^|[^A-Za-z0-9_])' + name + '=');
+		}
+	}
+}
+
+for (let i = 0; i < CLASSIFY_SPEC.rules.length; i++) {
+	compileKvHasPatterns(CLASSIFY_SPEC.rules[i]);
+}
+
+function validateClassifySpec(spec) {
+	const validateNode = function (node) {
+		if (!node || typeof node !== 'object' || Array.isArray(node))
+			throw new Error('CLASSIFY_SPEC node must be an object');
+		const keys = Object.keys(node);
+		if (keys.length !== 1)
+			throw new Error(
+				'CLASSIFY_SPEC node must have exactly one key: ' + JSON.stringify(node)
+			);
+		const key = keys[0];
+		if (key === 'and' || key === 'or') {
+			const children = node[key];
+			if (!Array.isArray(children))
+				throw new Error('CLASSIFY_SPEC ' + key + ' node must be an array');
+			if (children.length === 0)
+				throw new Error('CLASSIFY_SPEC ' + key + ' node must be a non-empty array');
+			for (let i = 0; i < children.length; i++) validateNode(children[i]);
+			return;
+		}
+		if (key === 'kv' || key === 'kvAny') {
+			const values = node[key];
+			let valid = Array.isArray(values) && values.length > 0;
+			for (let i = 0; valid && i < values.length; i++) {
+				if (typeof values[i] !== 'string' || values[i].trim().length === 0) valid = false;
+			}
+			if (!valid)
+				throw new Error(
+					'CLASSIFY_SPEC ' +
+						key +
+						' predicate must be a non-empty array of non-empty strings'
+				);
+			for (let i = 0; i < values.length; i++) {
+				if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(values[i]))
+					throw new Error(
+						'CLASSIFY_SPEC ' + key + ' predicate contains an invalid KV name'
+					);
+			}
+			return;
+		}
+		if (key === 'action') {
+			if (node.action !== 'known')
+				throw new Error('CLASSIFY_SPEC action predicate must be "known"');
+			return;
+		}
+		if (key === 'hint') {
+			if (node.hint !== true) throw new Error('CLASSIFY_SPEC hint predicate must be true');
+			return;
+		}
+		throw new Error('unrecognised CLASSIFY_SPEC predicate node: ' + JSON.stringify(node));
+	};
+
+	if (!Array.isArray(spec.rules) || spec.rules.length === 0)
+		throw new Error('CLASSIFY_SPEC rules must be a non-empty array');
+	for (let i = 0; i < spec.rules.length; i++) validateNode(spec.rules[i]);
+}
+
 function wordPattern(words) {
 	const alt = words.join('|');
 	return new RegExp('(^|[^A-Za-z0-9_])(' + alt + ')([^A-Za-z0-9_]|$)', 'i');
@@ -99,12 +183,18 @@ const NETFILTER_KV_GLUE = new RegExp(
 
 return baseclass.extend({
 	CLASSIFY_SPEC: CLASSIFY_SPEC,
+	validateClassifySpec: validateClassifySpec,
 
 	TCP_FLAG_TAIL:
 		/\b((?:SYN|ACK|FIN|RST|PSH|URG|ECE|CWR)(?:\s+(?:SYN|ACK|FIN|RST|PSH|URG|ECE|CWR))*)(?:\s+[A-Z][A-Z0-9_]*=[^\s]+)*\s*$/i,
 	NETFILTER_KV_GLUE: NETFILTER_KV_GLUE,
 
 	kvHas: function (msg, key) {
+		if (typeof key === 'string' && Object.prototype.hasOwnProperty.call(KV_HAS_PATTERNS, key)) {
+			return KV_HAS_PATTERNS[key].test(msg);
+		}
+
+		/* Preserve direct, non-spec calls without retaining arbitrary keys. */
 		return new RegExp('(^|[^A-Za-z0-9_])' + key + '=').test(msg);
 	},
 
@@ -169,24 +259,21 @@ return baseclass.extend({
 		};
 
 		const evalNode = function (node) {
-			if (node.and) {
+			const keys = Object.keys(node);
+			const key = keys[0];
+			if (key === 'and') {
 				for (let i = 0; i < node.and.length; i++) {
 					if (!evalNode(node.and[i])) return false;
 				}
 				return true;
 			}
-			if (node.or) {
+			if (key === 'or') {
 				for (let i = 0; i < node.or.length; i++) {
 					if (evalNode(node.or[i])) return true;
 				}
 				return false;
 			}
-			const keys = Object.keys(node);
-			for (let i = 0; i < keys.length; i++) {
-				const k = keys[i];
-				if (pred[k]) return pred[k](node);
-			}
-			return false;
+			return pred[key](node);
 		};
 
 		for (let i = 0; i < this.CLASSIFY_SPEC.rules.length; i++) {
@@ -497,7 +584,7 @@ return baseclass.extend({
 		const p = this.parseFilterValue(spec);
 		if (!p.value) return true;
 
-		const hit = (haystack || '').indexOf(p.value) !== -1;
+		const hit = (haystack || '').toLowerCase().indexOf(p.value.toLowerCase()) !== -1;
 		return p.negate ? !hit : hit;
 	},
 
@@ -541,6 +628,11 @@ return baseclass.extend({
 		const hit =
 			row.interface === iface || row.interface_in === iface || row.interface_out === iface;
 		return p.negate ? !hit : hit;
+	},
+
+	/* Fields matchesFilter compares by substring ("contains"); the rest match exactly. */
+	isSubstringFilterField: function (key) {
+		return key === 'q' || key === 'src' || key === 'dst';
 	},
 
 	matchesFilter: function (row, filters) {

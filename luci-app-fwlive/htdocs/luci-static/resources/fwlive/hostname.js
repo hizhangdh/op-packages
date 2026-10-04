@@ -8,9 +8,9 @@
  * Pure Map helpers — safe to unit-test on host without LuCI.
  */
 return baseclass.extend({
-	CACHE_MAX: 1000,
+	CACHE_MAX: 4000,
 	FAIL_TTL_MS: 60000,
-	FAIL_MAX: 1000,
+	FAIL_MAX: 4000,
 
 	/* Touch-on-write LRU: re-insert moves key to newest; evict oldest when over max. */
 	lruSet: function (map, key, value, max) {
@@ -30,6 +30,20 @@ return baseclass.extend({
 		map.delete(key);
 		map.set(key, value);
 		return value;
+	},
+
+	/* Scoped IPv6 (`fe80::1%eth0`) resolves and caches under the bare address. */
+	stripZone: function (addr) {
+		if (typeof addr !== 'string') return addr;
+		const zone = addr.lastIndexOf('%');
+		return zone === -1 ? addr : addr.slice(0, zone);
+	},
+
+	/* Display reads refresh recency so visible names stay warm in the LRU. */
+	cachedName: function (map, addr) {
+		if (!map || !addr) return null;
+		const value = this.lruGet(map, this.stripZone(addr));
+		return value == null ? null : String(value);
 	},
 
 	failIsHot: function (failedMap, ip, nowMs, ttlMs) {
