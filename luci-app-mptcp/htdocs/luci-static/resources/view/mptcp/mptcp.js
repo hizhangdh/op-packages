@@ -21,7 +21,8 @@ return L.view.extend({
     load: function() {
 	return Promise.all([
 	    L.resolveDefault(callSystemBoard(), {}),
-	    L.resolveDefault(fs.read('/proc/sys/net/mptcp/available_path_managers'), '')
+	    L.resolveDefault(fs.read('/proc/sys/net/mptcp/available_path_managers'), ''),
+	    L.resolveDefault(fs.read('/proc/sys/net/mptcp/scheduler'), '')
 	]);
     },
 
@@ -36,6 +37,20 @@ return L.view.extend({
 	var availablePathManagers = String(res[1] || '').trim().split(/\s+/).filter(function(name) {
 		return name.length > 0;
 	});
+	// The scheduler the kernel actually runs. The mptcp init falls back to
+	// 'default' when the selected one can't be set (a BPF object that fails
+	// to register, a name this kernel doesn't know), and the list below would
+	// otherwise keep showing the selected one.
+	var activeScheduler = String(res[2] || '').trim();
+
+	// Compared as numbers, not as a float of the version string: "6.6"
+	// read as 6.6 is above 6.18.
+	var kernelVersion = String(boardinfo.kernel || '').split('.');
+	var kernelMajor = parseInt(kernelVersion[0], 10) || 0;
+	var kernelMinor = parseInt(kernelVersion[1], 10) || 0;
+	function kernelAtLeast(major, minor) {
+		return kernelMajor > major || (kernelMajor == major && kernelMinor >= minor);
+	}
 
 	function normalizeSchedulerValue(value) {
 		if (value == null)
@@ -158,6 +173,18 @@ return L.view.extend({
 		return m.checkDepends();
 	};
 
+	scheduler.renderWidget = function(section_id, option_index, cfgvalue) {
+		var widget = form.ListValue.prototype.renderWidget.apply(this, [section_id, option_index, cfgvalue]);
+		var selected = normalizeSchedulerValue(cfgvalue);
+
+		if (activeScheduler && selected && selected != activeScheduler)
+			L.dom.append(widget, E('div', { 'class': 'cbi-value-description' }, [
+				E('strong', {}, [ _('The kernel uses the %s scheduler: %s could not be enabled, see the system log.').format(activeScheduler, selected) ])
+			]));
+
+		return widget;
+	};
+
 	o = s.option(form.Flag, "mptcp_dscp_weight_vps_sync", _("Mirror DSCP/weight pins to gateway"),
 		_("When using a DSCP or weight BPF scheduler, also sync each WAN’s pin to the gateway (VPS) so it also holds for traffic the gateway sends (downloads), not just traffic the router sends (uploads). Disabling this only stops future syncs -- it does not remove pins already pushed to the gateway."));
 	o.default = "1";
@@ -165,6 +192,12 @@ return L.view.extend({
 	o.depends("mptcp_scheduler", "bpf_weight");
 	o.depends("mptcp_scheduler", "bpf_weight_rr");
 	o.depends("mptcp_scheduler", "bpf_burstweight");
+	/* Every option below that depends() on another field keeps its stored
+	 * value while hidden: form.js otherwise removes it on any save, so a
+	 * save made with another scheduler or with mptcp_pm_type=0 silently
+	 * dropped e.g. mptcpd_enable / mptcp_force_multipath / this pin sync
+	 * (the #4349/#4352 option-drop family). */
+	o.retain = true;
 
 	if (parseFloat(boardinfo.kernel.substring(0,4)) < 6) {
 		o = s.option(form.Value, "mptcp_syn_retries", _("Multipath TCP SYN retries"));
@@ -182,7 +215,10 @@ return L.view.extend({
 	o = s.option(form.ListValue, "congestion", _("Congestion Control"),_("Default is cubic"));
 	o.load = function(section_id) {
 		return fs.exec_direct('/sbin/sysctl', ['-n', 'net.ipv4.tcp_available_congestion_control']).then(L.bind(function(entries) {
-			var congestioncontrol = entries.toString().split(' ');
+			/* sysctl ends its answer with a newline: split on ' ', the last
+			 * choice was "bbr\n", which matched neither the saved value nor
+			 * what the kernel takes */
+			var congestioncontrol = entries.toString().trim().split(/\s+/);
 			for (var d in congestioncontrol) {
 				this.value(congestioncontrol[d]);
 			};
@@ -211,18 +247,21 @@ return L.view.extend({
 		o.value("0", _("enable"));
 		o.value("1", _("disable"));
 		o.default = "0";
+		o.retain = true;
 
 		o = s.option(form.ListValue, "mptcp_force_multipath", _("Force Multipath configuration"));
 		o.depends("mptcp_pm_type","1");
 		o.value("1", _("enable"));
 		o.value("0", _("disable"));
 		o.default = "1";
+		o.retain = true;
 
 		o = s.option(form.ListValue, "mptcpd_enable", _("Enable MPTCPd"));
 		o.depends("mptcp_pm_type","1");
 		o.value("enable", _("enable"));
 		o.value("disable", _("disable"));
 		o.default = "disable";
+		o.retain = true;
 
 		o = s.option(form.DynamicList, "mptcpd_path_manager", _("MPTCPd path managers"));
 		o.load = function(section_id) {
@@ -234,6 +273,7 @@ return L.view.extend({
 			}, this));
 		};
 		o.depends("mptcp_pm_type","1");
+		o.retain = true;
 
 		o = s.option(form.DynamicList, "mptcpd_plugins", _("MPTCPd plugins"));
 		o.load = function(section_id) {
@@ -245,6 +285,7 @@ return L.view.extend({
 			}, this));
 		};
 		o.depends("mptcp_pm_type","1");
+		o.retain = true;
 
 		o = s.option(form.DynamicList, "mptcpd_addr_flags", _("MPTCPd Address annoucement flags"));
 		o.value("subflow","subflow");
@@ -252,15 +293,19 @@ return L.view.extend({
 		o.value("backup","backup");
 		o.value("fullmesh","fullmesh");
 		o.depends("mptcp_pm_type","1");
+		o.retain = true;
 
 		o = s.option(form.DynamicList, "mptcpd_notify_flags", _("MPTCPd Address notification flags"));
 		o.value("existing","existing");
 		o.value("skip_link_local","skip_link_local");
 		o.value("skip_loopback","skip_loopback");
 		o.depends("mptcp_pm_type","1");
+		o.retain = true;
 
+		// The kernel takes 8 at most for both limits, and one value above
+		// it made "ip mptcp limits set" fail for both
 		o = s.option(form.Value, "mptcp_subflows", _("Max subflows"),_("specifies the maximum number of additional subflows allowed for each MPTCP connection"));
-		o.datatype = "uinteger";
+		o.datatype = "range(0,8)";
 		o.rmempty = false;
 		o.default = 3;
 
@@ -270,7 +315,7 @@ return L.view.extend({
 		o.default = 4;
 
 		o = s.option(form.Value, "mptcp_add_addr_accepted", _("Max add address"),_("specifies the maximum number of ADD_ADDR (add address) suboptions accepted for each MPTCP connection"));
-		o.datatype = "uinteger";
+		o.datatype = "range(0,8)";
 		o.rmempty = false;
 		o.default = 1;
 
@@ -278,18 +323,18 @@ return L.view.extend({
 		o.datatype = "uinteger";
 		o.rmempty = false;
 		o.default = 120;
-		if (parseFloat(boardinfo.kernel.substring(0,4)) >= 6.18) {
+		if (kernelAtLeast(6, 18)) {
 			o = s.option(form.Value, "mptcp_blackhole_timeout", _("Blackhole timeout"),_("Initial time period in second to disable MPTCP on active MPTCP sockets when a MPTCP firewall blackhole issue happens. This time period will grow exponentially when more blackhole issues get detected right after MPTCP is re-enabled and will reset to the initial value when the blackhole issue goes away."));
 			o.datatype = "uinteger";
 			o.rmempty = false;
-			o.default = 3600;
+			o.default = 0;
 
 			o = s.option(form.Value, "mptcp_close_timeout", _("Close timeout"),_("Set the make-after-break timeout: in absence of any close or shutdown syscall, MPTCP sockets will maintain the status unchanged for such time, after the last subflow removal, before moving to TCP_CLOSE."));
 			o.datatype = "uinteger";
 			o.rmempty = false;
 			o.default = 60;
 
-			o = s.option(form.Value, "mptcp_syn_retrans_before_tcp_fallback", _("Control message timeout"),_("The number of SYN + MP_CAPABLE retransmissions before falling back to TCP, i.e. dropping the MPTCP options."));
+			o = s.option(form.Value, "mptcp_syn_retrans_before_tcp_fallback", _("SYN retransmissions before TCP fallback"),_("The number of SYN + MP_CAPABLE retransmissions before falling back to TCP, i.e. dropping the MPTCP options."));
 			o.datatype = "uinteger";
 			o.rmempty = false;
 			o.default = 2;

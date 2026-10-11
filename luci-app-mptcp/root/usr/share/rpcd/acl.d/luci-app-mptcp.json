@@ -7,6 +7,7 @@
 		"/usr/lib/mptcpd": [ "list" ],
 		"/usr/share/bpf/scheduler": [ "list" ],
 		"/proc/sys/net/mptcp/available_path_managers": [ "read" ],
+		"/proc/sys/net/mptcp/scheduler": [ "read" ],
 		"/sbin/sysctl -n net.ipv4.tcp_available_congestion_control": [ "exec" ]
 	    },
 	    "ubus": {
@@ -21,15 +22,19 @@
 		    "mptcp_connections",
 		    "mptcp_check_trace",
 		    "get_settings",
-		    "set_settings",
 		    "get_interface_settings",
-		    "set_interface_settings",
 		    "diagnose"
 		]
 	    }
 	},
 	"write": {
-	    "uci": [ "openmptcprouter", "network" ]
+	    "uci": [ "openmptcprouter", "network" ],
+	    "ubus": {
+		"luci.mptcp": [
+		    "set_settings",
+		    "set_interface_settings"
+		]
+	    }
 	}
     }
 }

@@ -1,4 +1,12 @@
 #!/bin/sh
+[ ! -f "/usr/share/ucitrack/luci-app-smscontrol.json" ] && {
+    cat > /usr/share/ucitrack/luci-app-smscontrol.json << EEOF
+{
+    "config": "smscontrol",
+    "init": "smscontrol"
+}
+EEOF
+}
 
 uci -q batch <<-EOF >/dev/null
 	delete ucitrack.@smscontrol[-1]

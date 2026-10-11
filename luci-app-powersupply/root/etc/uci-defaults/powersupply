@@ -1,4 +1,12 @@
 #!/bin/sh
+[ ! -f "/usr/share/ucitrack/luci-app-powersupply.json" ] && {
+    cat > /usr/share/ucitrack/luci-app-powersupply.json << EEOF
+{
+    "config": "powersupply",
+    "init": "powersupply"
+}
+EEOF
+}
 
 uci -q batch <<-EOF >/dev/null
 	delete ucitrack.@powersupply[-1]
